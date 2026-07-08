@@ -799,9 +799,6 @@ public class ModeActivity extends Activity {
     }
 
     private void updateMetrics() {
-        if (metricsText == null) {
-            return;
-        }
         if (metricsView == null) {
             return;
         }
