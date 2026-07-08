@@ -18,6 +18,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashLogger.install(this);
         setTitle("MobileStudioV2");
 
         LinearLayout root = new LinearLayout(this);
@@ -72,6 +73,40 @@ public class MainActivity extends Activity {
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);
         root.addView(footer, fullWidthWrap());
+
+
+        String lastCrash = CrashLogger.read(this);
+        if (lastCrash != null && !lastCrash.trim().isEmpty()) {
+            TextView crashTitle = new TextView(this);
+            crashTitle.setText("Last crash log — copy/send this to ChatGPT");
+            crashTitle.setTextSize(15);
+            crashTitle.setTypeface(Typeface.DEFAULT_BOLD);
+            crashTitle.setTextColor(Color.rgb(185, 28, 28));
+            crashTitle.setPadding(0, dp(18), 0, dp(6));
+            root.addView(crashTitle, fullWidthWrap());
+
+            TextView crashBody = new TextView(this);
+            crashBody.setText(lastCrash.length() > 3500 ? lastCrash.substring(0, 3500) + "\n...truncated..." : lastCrash);
+            crashBody.setTextSize(11);
+            crashBody.setTextColor(Color.rgb(68, 64, 60));
+            crashBody.setPadding(dp(12), dp(10), dp(12), dp(10));
+            crashBody.setBackground(makeRoundedBackground(Color.rgb(254, 242, 242), dp(14)));
+            root.addView(crashBody, fullWidthWrapWithBottom(dp(10)));
+
+            TextView clearCrash = new TextView(this);
+            clearCrash.setText("Clear crash log");
+            clearCrash.setTextSize(14);
+            clearCrash.setTypeface(Typeface.DEFAULT_BOLD);
+            clearCrash.setTextColor(Color.WHITE);
+            clearCrash.setGravity(Gravity.CENTER);
+            clearCrash.setPadding(dp(14), dp(10), dp(14), dp(10));
+            clearCrash.setBackground(makeRoundedBackground(Color.rgb(185, 28, 28), dp(16)));
+            clearCrash.setOnClickListener(v -> {
+                CrashLogger.clear(this);
+                crashBody.setText("Crash log cleared. Reopen the app if needed.");
+            });
+            root.addView(clearCrash, fullWidthWrapWithBottom(dp(14)));
+        }
 
         setContentView(root);
     }

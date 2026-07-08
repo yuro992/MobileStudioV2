@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
@@ -24,7 +23,8 @@ import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.Surface;
-import android.view.TextureView;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -70,8 +70,7 @@ public class ModeActivity extends Activity {
     private TextView stopButton;
     private EditText ipInput;
     private EditText portInput;
-    private TextureView studioPreviewView;
-    private SurfaceTexture studioPreviewTexture;
+    private SurfaceView studioPreviewView;
     private Surface decoderOutputSurface;
 
     private Intent projectionPermissionData;
@@ -148,6 +147,7 @@ public class ModeActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashLogger.install(this);
 
         mode = getIntent().getStringExtra(MainActivity.EXTRA_MODE);
         if (mode == null || mode.trim().isEmpty()) {
@@ -157,10 +157,15 @@ public class ModeActivity extends Activity {
         setTitle(mode + " Mode");
         mainHandler.post(metricsTicker);
 
-        if ("Studio".equalsIgnoreCase(mode)) {
-            buildStudioScreen();
-        } else {
-            buildSenderScreen();
+        try {
+            if ("Studio".equalsIgnoreCase(mode)) {
+                buildStudioScreen();
+            } else {
+                buildSenderScreen();
+            }
+        } catch (Throwable t) {
+            CrashLogger.save(this, t);
+            buildStudioCrashScreen(t);
         }
     }
 
@@ -241,9 +246,30 @@ public class ModeActivity extends Activity {
         addTitle(root, "Studio Mode Ready");
         addDescription(root, "Connect to Sender over Wi-Fi/LAN, receive H.264 packets, and render a decode preview.");
 
-        studioPreviewView = new TextureView(this);
+        studioPreviewView = new SurfaceView(this);
         studioPreviewView.setBackgroundColor(Color.BLACK);
-        studioPreviewView.setOpaque(true);
+        studioPreviewView.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                decoderOutputSurface = holder.getSurface();
+                setStatus("Preview surface ready. Connect to Sender", true);
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                decoderOutputSurface = holder.getSurface();
+                updateMetrics();
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                decoderOutputSurface = null;
+                releaseStudioDecoder();
+                if (studioClientRunning) {
+                    setStatus("Preview surface lost. Disconnect and reconnect", false);
+                }
+            }
+        });
         root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
 
         ipInput = new EditText(this);
@@ -287,72 +313,32 @@ public class ModeActivity extends Activity {
 
         updateButtons();
         setContentView(wrapInScroll(root));
-
-        studioPreviewView.post(this::installStudioPreviewTextureListener);
     }
 
-    private void installStudioPreviewTextureListener() {
-        if (studioPreviewView == null) {
-            return;
-        }
-        studioPreviewView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
-            @Override
-            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-                attachStudioDecoderSurface(surface);
-            }
+    private void buildStudioCrashScreen(Throwable error) {
+        LinearLayout root = baseContent();
+        addBadge(root);
+        addTitle(root, "Studio Mode Crash Report");
+        addDescription(root, "Studio startup failed, but the app stayed open so we can read the exact error.");
 
-            @Override
-            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
-                attachStudioDecoderSurface(surface);
-            }
+        statusView = statusBox("Status: Studio startup failed", false);
+        root.addView(statusView, fullWidthWrapWithBottom(dp(14)));
 
-            @Override
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-                studioPreviewTexture = null;
-                if (decoderOutputSurface != null) {
-                    try {
-                        decoderOutputSurface.release();
-                    } catch (Exception ignored) {
-                    }
-                    decoderOutputSurface = null;
-                }
-                releaseStudioDecoder();
-                if (studioClientRunning) {
-                    setStatus("Preview surface lost. Disconnect and reconnect", false);
-                }
-                updateMetrics();
-                return true;
-            }
+        metricsView = metricsBox("Crash stacktrace\n" + shorten(CrashLogger.stack(error), 3200));
+        root.addView(metricsView, fullWidthWrapWithBottom(dp(16)));
 
-            @Override
-            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
-            }
+        TextView clearCrash = actionButton("Clear crash log", Color.rgb(185, 28, 28));
+        clearCrash.setOnClickListener(v -> {
+            CrashLogger.clear(this);
+            metricsView.setText("Crash log cleared");
         });
+        root.addView(clearCrash, fullWidthWrapWithBottom(dp(10)));
 
-        if (studioPreviewView.isAvailable()) {
-            SurfaceTexture surface = studioPreviewView.getSurfaceTexture();
-            if (surface != null) {
-                attachStudioDecoderSurface(surface);
-            }
-        }
-    }
+        TextView backButton = actionButton("Back", Color.rgb(39, 39, 42));
+        backButton.setOnClickListener(v -> finish());
+        root.addView(backButton, wrapCentered());
 
-    private void attachStudioDecoderSurface(SurfaceTexture surface) {
-        if (surface == null) {
-            return;
-        }
-        studioPreviewTexture = surface;
-        if (decoderOutputSurface != null) {
-            try {
-                decoderOutputSurface.release();
-            } catch (Exception ignored) {
-            }
-        }
-        decoderOutputSurface = new Surface(surface);
-        if (!studioClientRunning) {
-            setStatus("Preview surface ready. Connect to Sender", true);
-        }
-        updateMetrics();
+        setContentView(wrapInScroll(root));
     }
 
     private void requestCapturePermission() {
@@ -807,7 +793,7 @@ public class ModeActivity extends Activity {
         videoDecoder.start();
         decoderWidth = width;
         decoderHeight = height;
-        decoderFormatSummary = "video/avc " + width + "x" + height + " -> TextureView";
+        decoderFormatSummary = "video/avc " + width + "x" + height + " -> SurfaceView";
     }
 
     private synchronized void drainStudioDecoderOutputs() {
