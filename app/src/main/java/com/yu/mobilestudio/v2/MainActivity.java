@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, fullWidthWrap());
 
         TextView phase = new TextView(this);
-        phase.setText("Phase 1: UI skeleton only");
+        phase.setText("Phase 2: screen-capture permission flow");
         phase.setTextSize(14);
         phase.setTextColor(Color.rgb(124, 58, 237));
         phase.setTypeface(Typeface.DEFAULT_BOLD);
@@ -54,20 +54,20 @@ public class MainActivity extends Activity {
 
         View senderCard = makeModeCard(
                 "Sender Mode",
-                "Game phone: screen sender placeholder",
+                "Game phone: request Android screen-capture permission",
                 "Sender"
         );
-        root.addView(senderCard, fullWidthHeightWithBottom(dp(118), dp(14)));
+        root.addView(senderCard, fullWidthHeightWithBottom(dp(124), dp(14)));
 
         View studioCard = makeModeCard(
                 "Studio Mode",
-                "Stream phone: studio controller placeholder",
+                "Stream phone: studio placeholder for later phases",
                 "Studio"
         );
-        root.addView(studioCard, fullWidthHeightWithBottom(dp(118), dp(20)));
+        root.addView(studioCard, fullWidthHeightWithBottom(dp(124), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Next phase will add Android screen-capture permission flow.");
+        footer.setText("Phase 2 only requests capture permission. No preview, encoding, wireless stream, or live output yet.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);

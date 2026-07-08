@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 1 — Android Skeleton + APK Build
+Phase 2 — Screen Capture Permission Flow
 
 ## What exists
 
@@ -10,15 +10,43 @@ Phase 1 — Android Skeleton + APK Build
 - Java-based native Android UI
 - `MainActivity`
 - `ModeActivity`
-- Sender Mode placeholder
+- Sender Mode screen-capture permission request
+- Sender Mode permission status display
 - Studio Mode placeholder
 - GitHub Actions workflow for debug APK
-- Phase 1 verify script
+- Phase 2 verify script
 
 ## Important constraints
 
-Do not add real streaming, screen capture, internal audio, wireless sender/receiver, native media encoding, API keys, or `.env` in Phase 1.
+Do not add these in Phase 2:
+
+- Screen preview
+- Virtual display creation
+- Video encoding
+- Internal audio capture
+- Wireless sender/receiver streaming
+- RTMP
+- WebRTC
+- FFmpeg
+- Browser Source
+- API keys
+- `.env`
+
+## Manual test checklist
+
+1. Install the Phase 2 debug APK.
+2. Open MobileStudioV2.
+3. Tap Sender Mode.
+4. Tap `Request Screen Capture Permission`.
+5. Confirm Android shows the screen-capture permission dialog.
+6. Tap allow/start now.
+7. Confirm app status changes to `Status: Screen capture permission granted`.
+8. Repeat once and cancel.
+9. Confirm app status changes to `Status: Permission denied or cancelled`.
+10. Open Studio Mode and confirm it is still placeholder only.
 
 ## Next phase
 
-Phase 2 should add Android screen capture permission flow only.
+Phase 3 should create a local capture preview path only.
+
+The next phase should not add RTMP, audio, wireless streaming, or Browser Source yet.

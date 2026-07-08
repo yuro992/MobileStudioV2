@@ -9,3 +9,4 @@ local.properties
 .env.*
 *.keystore
 *.jks
+.phase2_backups/

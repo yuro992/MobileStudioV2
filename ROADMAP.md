@@ -4,13 +4,21 @@
 
 Status: PASS
 
+Required tools:
+
+- git
+- Java 17
+- node
+- npm
+- python3
+- jq
+- ripgrep
+
 ## Phase 1 — Android Skeleton + APK Build
 
-Goal:
+Status: PASS
 
-Create a minimal Android app with Sender Mode and Studio Mode placeholders, plus a GitHub Actions debug APK build.
-
-Pass criteria:
+Completed:
 
 - Android project exists
 - Package name is `com.yu.mobilestudio.v2`
@@ -19,13 +27,31 @@ Pass criteria:
 - Sender Mode opens placeholder screen
 - Studio Mode opens placeholder screen
 - Verify script exists and passes
-- GitHub Actions workflow exists
-- No real screen capture, audio, wireless, live output, realtime browser source, or native media encoding implementation
+- GitHub Actions workflow exists and builds APK
 
 ## Phase 2 — Screen Capture Permission Flow
 
+Status: IN PROGRESS
+
 Goal:
 
-Add Android screen capture permission request and local preview path.
+Add Android screen-capture permission request in Sender Mode.
 
-Do not start until Phase 1 is confirmed PASS.
+Pass criteria:
+
+- Sender Mode has a screen-capture permission button
+- Android permission dialog opens
+- Granting permission updates status to `Screen capture permission granted`
+- Cancelling/denying permission updates status to `Permission denied or cancelled`
+- Studio Mode remains placeholder only
+- Verify script exists and passes
+- GitHub Actions workflow builds debug APK
+- No preview, virtual display, encoding, audio, wireless stream, RTMP, WebRTC, or FFmpeg implementation
+
+## Phase 3 — Local Capture Preview
+
+Goal:
+
+Use the granted permission to create a safe local preview path.
+
+Do not start until Phase 2 is confirmed PASS.
