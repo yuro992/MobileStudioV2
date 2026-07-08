@@ -4,7 +4,7 @@ MobileStudioV2 is a two-phone mobile live studio experiment.
 
 ## Current status
 
-Phase 5 is Sender preview cleanup plus capture metrics.
+Phase 6 is Sender H.264 Encoder Dry Run.
 
 Current features:
 
@@ -15,37 +15,39 @@ Current features:
   - Studio Mode
 - Sender Mode can request Android screen-capture permission
 - Sender Mode can start and stop a foreground capture session
-- Sender Mode can show the phone screen in a local preview surface
-- Sender Mode shows basic capture metrics:
-  - screen size
-  - density dpi
-  - preview surface size
-  - orientation
-  - preview uptime
-  - keep-screen-on state
-  - FPS placeholder status
-- Sender Mode keeps the screen awake while preview is active
-- Sender Mode releases capture resources when leaving the screen
+- Sender Mode can encode the captured screen into H.264 dry-run output buffers using `MediaCodec`
+- Sender Mode shows encoder metrics:
+  - source screen size
+  - encoder resolution
+  - target bitrate
+  - target FPS
+  - encoded bytes
+  - encoded output count
+  - key frame count
+  - codec config buffer count
+  - output format summary
+  - uptime
+- Nothing is saved, streamed, sent, or recorded in Phase 6
 - Studio Mode remains a placeholder
 - Verify script
 - GitHub Actions workflow for debug APK build
 
 ## Not included yet
 
-Phase 5 intentionally does not include:
+Phase 6 intentionally does not include:
 
-- Video encoding
 - Wireless sender/receiver video transport
 - RTMP output
 - WebRTC
 - FFmpeg
 - Internal audio capture
 - Browser Source
+- Video recording or file output
 
 ## Verify
 
 ```bash
-bash scripts/verify_phase5.sh
+bash scripts/verify_phase6.sh
 ```
 
 ## Build

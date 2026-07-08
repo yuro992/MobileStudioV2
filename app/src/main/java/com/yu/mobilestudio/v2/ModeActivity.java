@@ -9,6 +9,9 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -18,17 +21,23 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.Surface;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.nio.ByteBuffer;
+import java.util.Locale;
+
 public class ModeActivity extends Activity {
 
-    private static final int REQUEST_CAPTURE_PERMISSION = 2402;
+    private static final int REQUEST_CAPTURE_PERMISSION = 2602;
+    private static final int TARGET_SHORT_SIDE = 720;
+    private static final int TARGET_FPS = 30;
+    private static final int TARGET_BITRATE = 4_000_000;
+    private static final int I_FRAME_INTERVAL_SECONDS = 2;
+    private static final String AVC_MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -38,28 +47,36 @@ public class ModeActivity extends Activity {
     private TextView requestButton;
     private TextView startButton;
     private TextView stopButton;
-    private SurfaceView previewSurfaceView;
 
     private Intent projectionPermissionData;
     private int projectionPermissionResultCode = Activity.RESULT_CANCELED;
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
-    private boolean surfaceReady = false;
-    private boolean captureActive = false;
+    private MediaCodec videoEncoder;
+    private Surface encoderInputSurface;
+    private Thread encoderDrainThread;
+
+    private volatile boolean encoderActive = false;
+    private volatile boolean drainRunning = false;
     private boolean releasingSession = false;
 
-    private int captureWidth = 0;
-    private int captureHeight = 0;
-    private int captureDensity = 0;
-    private int previewSurfaceWidth = 0;
-    private int previewSurfaceHeight = 0;
-    private long captureStartedAtMs = 0L;
+    private int sourceWidth = 0;
+    private int sourceHeight = 0;
+    private int sourceDensity = 0;
+    private int encoderWidth = 0;
+    private int encoderHeight = 0;
+    private long encoderStartedAtMs = 0L;
+    private long encodedBytes = 0L;
+    private long encodedOutputCount = 0L;
+    private long keyFrameCount = 0L;
+    private long codecConfigCount = 0L;
+    private String outputFormatSummary = "waiting";
 
     private final Runnable metricsTicker = new Runnable() {
         @Override
         public void run() {
             updateMetrics();
-            if (captureActive) {
+            if (encoderActive) {
                 mainHandler.postDelayed(this, 1000);
             }
         }
@@ -68,7 +85,7 @@ public class ModeActivity extends Activity {
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
         public void onStop() {
-            mainHandler.post(() -> releaseCaptureSession(false, "Capture preview stopped by Android. Request permission again."));
+            mainHandler.post(() -> releaseEncoderSession(false, "Encoder dry run stopped by Android. Request permission again."));
         }
     };
 
@@ -92,14 +109,14 @@ public class ModeActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        releaseCaptureSession(true, null);
+        releaseEncoderSession(true, null);
         super.onDestroy();
     }
 
     @Override
     public void onBackPressed() {
-        if (captureActive || projectionPermissionData != null) {
-            releaseCaptureSession(true, null);
+        if (encoderActive || projectionPermissionData != null) {
+            releaseEncoderSession(true, null);
         }
         super.onBackPressed();
     }
@@ -115,7 +132,7 @@ public class ModeActivity extends Activity {
         if (resultCode == Activity.RESULT_OK && data != null) {
             projectionPermissionResultCode = resultCode;
             projectionPermissionData = data;
-            setStatus("Permission granted. Ready to start preview", Color.rgb(21, 128, 61));
+            setStatus("Permission granted. Ready to start encoder dry run", Color.rgb(21, 128, 61));
         } else {
             projectionPermissionResultCode = Activity.RESULT_CANCELED;
             projectionPermissionData = null;
@@ -140,7 +157,7 @@ public class ModeActivity extends Activity {
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
 
-        TextView badge = makeBadge("Phase 5");
+        TextView badge = makeBadge("Phase 6");
         root.addView(badge, wrapWithBottom(dp(14)));
 
         TextView title = makeText("Sender Mode Ready", 28, Color.rgb(28, 25, 23), true);
@@ -148,7 +165,7 @@ public class ModeActivity extends Activity {
         root.addView(title, fullWidthWrapWithBottom(dp(10)));
 
         TextView description = makeText(
-                "Local preview cleanup with capture metrics. This phase still does not encode, send, or record video.",
+                "H.264 encoder dry run. This phase encodes screen buffers locally but does not save, send, stream, or record video.",
                 15,
                 Color.rgb(87, 83, 78),
                 false
@@ -156,47 +173,16 @@ public class ModeActivity extends Activity {
         description.setGravity(Gravity.CENTER);
         root.addView(description, fullWidthWrapWithBottom(dp(14)));
 
-        FrameLayout previewFrame = new FrameLayout(this);
-        previewFrame.setPadding(dp(2), dp(2), dp(2), dp(2));
-        previewFrame.setBackground(makePreviewBackground());
-
-        previewSurfaceView = new SurfaceView(this);
-        previewSurfaceView.setZOrderOnTop(false);
-        previewSurfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                surfaceReady = true;
-                updateMetrics();
-                updateButtons();
-            }
-
-            @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                surfaceReady = true;
-                previewSurfaceWidth = width;
-                previewSurfaceHeight = height;
-                updateMetrics();
-            }
-
-            @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                surfaceReady = false;
-                previewSurfaceWidth = 0;
-                previewSurfaceHeight = 0;
-                if (captureActive) {
-                    releaseCaptureSession(true, "Preview surface was destroyed. Request permission again.");
-                }
-                updateMetrics();
-                updateButtons();
-            }
-        });
-
-        previewFrame.addView(previewSurfaceView, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-        ));
-
-        root.addView(previewFrame, fullWidthHeightWithBottom(dp(220), dp(12)));
+        TextView encoderPanel = makeText(
+                "Encoder dry run\nMediaProjection → MediaCodec H.264\nNo file output • No wireless transport • No audio",
+                13,
+                Color.rgb(68, 64, 60),
+                false
+        );
+        encoderPanel.setGravity(Gravity.CENTER);
+        encoderPanel.setPadding(dp(12), dp(18), dp(12), dp(18));
+        encoderPanel.setBackground(makePanelBackground());
+        root.addView(encoderPanel, fullWidthWrapWithBottom(dp(12)));
 
         statusView = makeText("Status: Not requested", 15, Color.rgb(68, 64, 60), true);
         statusView.setGravity(Gravity.CENTER);
@@ -204,7 +190,7 @@ public class ModeActivity extends Activity {
         statusView.setBackground(makeRoundedBackground(Color.WHITE, dp(18)));
         root.addView(statusView, fullWidthWrapWithBottom(dp(10)));
 
-        metricsView = makeText("Capture metrics: waiting for preview surface", 12, Color.rgb(87, 83, 78), false);
+        metricsView = makeText("Encoder metrics: waiting for permission", 12, Color.rgb(87, 83, 78), false);
         metricsView.setGravity(Gravity.CENTER);
         metricsView.setPadding(dp(12), dp(10), dp(12), dp(10));
         metricsView.setBackground(makeRoundedBackground(Color.rgb(245, 245, 244), dp(16)));
@@ -214,12 +200,12 @@ public class ModeActivity extends Activity {
         requestButton.setOnClickListener(v -> requestScreenCapturePermission());
         root.addView(requestButton, fullWidthWrapWithBottom(dp(10)));
 
-        startButton = makeButton("Start Stable Preview", Color.rgb(21, 128, 61));
-        startButton.setOnClickListener(v -> startLocalPreview());
+        startButton = makeButton("Start Encoder Dry Run", Color.rgb(21, 128, 61));
+        startButton.setOnClickListener(v -> startEncoderDryRun());
         root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
 
-        stopButton = makeButton("Stop Stable Preview", Color.rgb(185, 28, 28));
-        stopButton.setOnClickListener(v -> releaseCaptureSession(true, "Capture preview stopped. Request permission again."));
+        stopButton = makeButton("Stop Encoder Dry Run", Color.rgb(185, 28, 28));
+        stopButton.setOnClickListener(v -> releaseEncoderSession(true, "Encoder dry run stopped. Request permission again."));
         root.addView(stopButton, fullWidthWrapWithBottom(dp(14)));
 
         TextView back = makeButton("Back", Color.rgb(39, 39, 42));
@@ -238,14 +224,14 @@ public class ModeActivity extends Activity {
         root.setPadding(dp(24), dp(24), dp(24), dp(24));
         root.setBackgroundColor(Color.rgb(250, 250, 255));
 
-        root.addView(makeBadge("Phase 5"), wrapWithBottom(dp(22)));
+        root.addView(makeBadge("Phase 6"), wrapWithBottom(dp(22)));
 
         TextView title = makeText("Studio Mode Ready", 28, Color.rgb(28, 25, 23), true);
         title.setGravity(Gravity.CENTER);
         root.addView(title, fullWidthWrapWithBottom(dp(12)));
 
         TextView description = makeText(
-                "Studio receiver is still a placeholder. Sender preview stabilization comes first.",
+                "Studio receiver is still a placeholder. Sender H.264 dry-run comes first.",
                 15,
                 Color.rgb(87, 83, 78),
                 false
@@ -261,8 +247,8 @@ public class ModeActivity extends Activity {
     }
 
     private void requestScreenCapturePermission() {
-        if (captureActive) {
-            setStatus("Stop the active preview before requesting again", Color.rgb(185, 28, 28));
+        if (encoderActive) {
+            setStatus("Stop the active encoder before requesting again", Color.rgb(185, 28, 28));
             return;
         }
 
@@ -276,9 +262,9 @@ public class ModeActivity extends Activity {
         startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE_PERMISSION);
     }
 
-    private void startLocalPreview() {
-        if (captureActive) {
-            setStatus("Capture preview already active", Color.rgb(21, 128, 61));
+    private void startEncoderDryRun() {
+        if (encoderActive) {
+            setStatus("Encoder dry run already active", Color.rgb(21, 128, 61));
             return;
         }
 
@@ -287,27 +273,32 @@ public class ModeActivity extends Activity {
             return;
         }
 
-        if (!surfaceReady || previewSurfaceView == null || !previewSurfaceView.getHolder().getSurface().isValid()) {
-            setStatus("Preview surface is not ready yet. Try again in a moment.", Color.rgb(185, 28, 28));
-            return;
-        }
-
-        setStatus("Starting stable foreground preview", Color.rgb(124, 58, 237));
+        setStatus("Starting H.264 encoder dry run", Color.rgb(124, 58, 237));
         startKeepAliveService();
-        waitForServiceThenCreatePreview(0);
+        waitForServiceThenCreateEncoder(0);
     }
 
-    private void waitForServiceThenCreatePreview(int attempt) {
+    private void waitForServiceThenCreateEncoder(int attempt) {
         if (MediaProjectionKeepAliveService.isRunning() || attempt >= 12) {
-            createVirtualDisplayPreview();
+            createEncoderDryRun();
             return;
         }
 
-        mainHandler.postDelayed(() -> waitForServiceThenCreatePreview(attempt + 1), 150);
+        mainHandler.postDelayed(() -> waitForServiceThenCreateEncoder(attempt + 1), 150);
     }
 
-    private void createVirtualDisplayPreview() {
+    private void createEncoderDryRun() {
         try {
+            DisplayMetrics metrics = new DisplayMetrics();
+            getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+
+            sourceWidth = Math.max(metrics.widthPixels, 1);
+            sourceHeight = Math.max(metrics.heightPixels, 1);
+            sourceDensity = metrics.densityDpi;
+            int[] targetSize = chooseEncoderSize(sourceWidth, sourceHeight);
+            encoderWidth = targetSize[0];
+            encoderHeight = targetSize[1];
+
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             if (manager == null) {
                 setStatus("MediaProjectionManager unavailable", Color.rgb(185, 28, 28));
@@ -315,58 +306,168 @@ public class ModeActivity extends Activity {
                 return;
             }
 
+            MediaFormat format = MediaFormat.createVideoFormat(AVC_MIME_TYPE, encoderWidth, encoderHeight);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, TARGET_BITRATE);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, TARGET_FPS);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS);
+
+            videoEncoder = MediaCodec.createEncoderByType(AVC_MIME_TYPE);
+            videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoderInputSurface = videoEncoder.createInputSurface();
+            videoEncoder.start();
+
             mediaProjection = manager.getMediaProjection(projectionPermissionResultCode, projectionPermissionData);
             if (mediaProjection == null) {
-                setStatus("Could not create MediaProjection. Request permission again.", Color.rgb(185, 28, 28));
-                stopKeepAliveService();
+                releaseEncoderSession(true, "Could not create MediaProjection. Request permission again.");
                 return;
             }
 
             mediaProjection.registerCallback(projectionCallback, mainHandler);
 
-            DisplayMetrics metrics = new DisplayMetrics();
-            getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
-
-            captureWidth = Math.max(metrics.widthPixels, 1);
-            captureHeight = Math.max(metrics.heightPixels, 1);
-            captureDensity = metrics.densityDpi;
-
             virtualDisplay = mediaProjection.createVirtualDisplay(
-                    "MobileStudioV2StableLocalPreview",
-                    captureWidth,
-                    captureHeight,
-                    captureDensity,
+                    "MobileStudioV2H264EncoderDryRun",
+                    encoderWidth,
+                    encoderHeight,
+                    sourceDensity,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    previewSurfaceView.getHolder().getSurface(),
+                    encoderInputSurface,
                     null,
                     mainHandler
             );
 
             if (virtualDisplay == null) {
-                releaseCaptureSession(true, "Could not create VirtualDisplay. Request permission again.");
+                releaseEncoderSession(true, "Could not create VirtualDisplay for encoder. Request permission again.");
                 return;
             }
 
-            captureActive = true;
-            captureStartedAtMs = SystemClock.elapsedRealtime();
+            encodedBytes = 0L;
+            encodedOutputCount = 0L;
+            keyFrameCount = 0L;
+            codecConfigCount = 0L;
+            outputFormatSummary = "waiting";
+            encoderActive = true;
+            drainRunning = true;
+            encoderStartedAtMs = SystemClock.elapsedRealtime();
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            setStatus("Stable capture preview active", Color.rgb(21, 128, 61));
+
+            startEncoderDrainThread();
+            setStatus("H.264 encoder dry run active", Color.rgb(21, 128, 61));
             updateMetrics();
             mainHandler.removeCallbacks(metricsTicker);
             mainHandler.post(metricsTicker);
             updateButtons();
         } catch (Exception exception) {
-            releaseCaptureSession(true, "Preview failed: " + exception.getClass().getSimpleName());
+            releaseEncoderSession(true, "Encoder failed: " + exception.getClass().getSimpleName());
         }
     }
 
-    private void releaseCaptureSession(boolean stopProjection, String message) {
+    private int[] chooseEncoderSize(int width, int height) {
+        int safeWidth = Math.max(width, 1);
+        int safeHeight = Math.max(height, 1);
+
+        int outputWidth;
+        int outputHeight;
+        if (safeHeight >= safeWidth) {
+            outputWidth = TARGET_SHORT_SIDE;
+            outputHeight = Math.round((float) safeHeight * outputWidth / safeWidth);
+        } else {
+            outputHeight = TARGET_SHORT_SIDE;
+            outputWidth = Math.round((float) safeWidth * outputHeight / safeHeight);
+        }
+
+        outputWidth = clamp(alignTo16(outputWidth), 320, 1920);
+        outputHeight = clamp(alignTo16(outputHeight), 320, 1920);
+
+        if ((outputWidth & 1) != 0) {
+            outputWidth++;
+        }
+        if ((outputHeight & 1) != 0) {
+            outputHeight++;
+        }
+
+        return new int[]{outputWidth, outputHeight};
+    }
+
+    private int alignTo16(int value) {
+        return Math.max(16, ((value + 15) / 16) * 16);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private void startEncoderDrainThread() {
+        encoderDrainThread = new Thread(() -> {
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
+            while (drainRunning) {
+                MediaCodec codec = videoEncoder;
+                if (codec == null) {
+                    break;
+                }
+
+                try {
+                    int outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000);
+
+                    if (outputIndex >= 0) {
+                        ByteBuffer outputBuffer = codec.getOutputBuffer(outputIndex);
+                        int size = Math.max(bufferInfo.size, 0);
+                        if (outputBuffer != null && size > 0) {
+                            encodedBytes += size;
+                        }
+
+                        encodedOutputCount++;
+                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                            keyFrameCount++;
+                        }
+                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            codecConfigCount++;
+                        }
+
+                        codec.releaseOutputBuffer(outputIndex, false);
+                    } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        MediaFormat newFormat = codec.getOutputFormat();
+                        outputFormatSummary = summarizeFormat(newFormat);
+                    }
+                } catch (IllegalStateException exception) {
+                    break;
+                } catch (Exception exception) {
+                    mainHandler.post(() -> setStatus("Encoder drain warning: " + exception.getClass().getSimpleName(), Color.rgb(185, 28, 28)));
+                    break;
+                }
+            }
+        }, "MobileStudioV2EncoderDrain");
+        encoderDrainThread.start();
+    }
+
+    private String summarizeFormat(MediaFormat format) {
+        if (format == null) {
+            return "unknown";
+        }
+        int width = format.containsKey(MediaFormat.KEY_WIDTH) ? format.getInteger(MediaFormat.KEY_WIDTH) : encoderWidth;
+        int height = format.containsKey(MediaFormat.KEY_HEIGHT) ? format.getInteger(MediaFormat.KEY_HEIGHT) : encoderHeight;
+        return AVC_MIME_TYPE + " " + width + "x" + height;
+    }
+
+    private void releaseEncoderSession(boolean stopProjection, String message) {
         if (releasingSession) {
             return;
         }
 
         releasingSession = true;
         mainHandler.removeCallbacks(metricsTicker);
+        drainRunning = false;
+
+        Thread drainThread = encoderDrainThread;
+        encoderDrainThread = null;
+        if (drainThread != null && drainThread != Thread.currentThread()) {
+            try {
+                drainThread.join(250);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        }
 
         if (virtualDisplay != null) {
             try {
@@ -391,11 +492,33 @@ public class ModeActivity extends Activity {
             }
         }
 
-        captureActive = false;
-        captureStartedAtMs = 0L;
-        captureWidth = 0;
-        captureHeight = 0;
-        captureDensity = 0;
+        if (encoderInputSurface != null) {
+            try {
+                encoderInputSurface.release();
+            } catch (Exception ignored) {
+            }
+            encoderInputSurface = null;
+        }
+
+        if (videoEncoder != null) {
+            try {
+                videoEncoder.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                videoEncoder.release();
+            } catch (Exception ignored) {
+            }
+            videoEncoder = null;
+        }
+
+        encoderActive = false;
+        encoderStartedAtMs = 0L;
+        sourceWidth = 0;
+        sourceHeight = 0;
+        sourceDensity = 0;
+        encoderWidth = 0;
+        encoderHeight = 0;
         projectionPermissionData = null;
         projectionPermissionResultCode = Activity.RESULT_CANCELED;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -443,27 +566,32 @@ public class ModeActivity extends Activity {
                 ? "landscape"
                 : "portrait";
 
-        String capture = captureActive
-                ? captureWidth + "x" + captureHeight + " @ " + captureDensity + " dpi"
+        String source = encoderActive
+                ? sourceWidth + "x" + sourceHeight + " @ " + sourceDensity + " dpi"
                 : "not active";
 
-        String surface = previewSurfaceWidth > 0 && previewSurfaceHeight > 0
-                ? previewSurfaceWidth + "x" + previewSurfaceHeight
-                : "waiting";
+        String encoderSize = encoderActive
+                ? encoderWidth + "x" + encoderHeight
+                : "target pending";
 
-        String uptime = captureActive && captureStartedAtMs > 0L
-                ? formatUptime(SystemClock.elapsedRealtime() - captureStartedAtMs)
+        String uptime = encoderActive && encoderStartedAtMs > 0L
+                ? formatUptime(SystemClock.elapsedRealtime() - encoderStartedAtMs)
                 : "0s";
 
-        String keepAwake = captureActive ? "on" : "off";
-        String fps = captureActive ? "preview active; FPS not measured yet" : "inactive";
+        String keepAwake = encoderActive ? "on" : "off";
+        String rate = encoderActive
+                ? formatBytes(encodedBytes) + " encoded | outputs " + encodedOutputCount
+                : "inactive";
 
         metricsView.setText(
-                "Capture metrics\n"
-                        + "Screen: " + capture + "\n"
-                        + "Preview surface: " + surface + "\n"
+                "Encoder metrics\n"
+                        + "Source screen: " + source + "\n"
+                        + "Encoder: H.264 " + encoderSize + " @ " + TARGET_FPS + " fps, " + formatBitrate(TARGET_BITRATE) + "\n"
+                        + "Encoded: " + rate + "\n"
+                        + "Key frames: " + keyFrameCount + " | Config buffers: " + codecConfigCount + "\n"
+                        + "Format: " + outputFormatSummary + "\n"
                         + "Orientation: " + orientation + " | Uptime: " + uptime + "\n"
-                        + "Keep screen on: " + keepAwake + " | FPS: " + fps
+                        + "Keep screen on: " + keepAwake + " | Network: off | File: off"
         );
     }
 
@@ -477,23 +605,37 @@ public class ModeActivity extends Activity {
         return seconds + "s";
     }
 
+    private String formatBytes(long bytes) {
+        if (bytes >= 1024L * 1024L) {
+            return String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0));
+        }
+        if (bytes >= 1024L) {
+            return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        }
+        return bytes + " B";
+    }
+
+    private String formatBitrate(int bitrate) {
+        return String.format(Locale.US, "%.1f Mbps", bitrate / 1_000_000.0);
+    }
+
     private void updateButtons() {
         boolean hasPermission = projectionPermissionData != null && projectionPermissionResultCode == Activity.RESULT_OK;
 
         if (requestButton != null) {
             requestButton.setText(hasPermission ? "Request Again" : "Request Screen Capture Permission");
-            requestButton.setEnabled(!captureActive);
-            requestButton.setAlpha(captureActive ? 0.55f : 1.0f);
+            requestButton.setEnabled(!encoderActive);
+            requestButton.setAlpha(encoderActive ? 0.55f : 1.0f);
         }
 
         if (startButton != null) {
-            startButton.setEnabled(hasPermission && surfaceReady && !captureActive);
-            startButton.setAlpha((hasPermission && surfaceReady && !captureActive) ? 1.0f : 0.45f);
+            startButton.setEnabled(hasPermission && !encoderActive);
+            startButton.setAlpha((hasPermission && !encoderActive) ? 1.0f : 0.45f);
         }
 
         if (stopButton != null) {
-            stopButton.setEnabled(captureActive);
-            stopButton.setAlpha(captureActive ? 1.0f : 0.45f);
+            stopButton.setEnabled(encoderActive);
+            stopButton.setAlpha(encoderActive ? 1.0f : 0.45f);
         }
     }
 
@@ -524,9 +666,9 @@ public class ModeActivity extends Activity {
         return button;
     }
 
-    private GradientDrawable makePreviewBackground() {
+    private GradientDrawable makePanelBackground() {
         GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(Color.rgb(24, 24, 27));
+        drawable.setColor(Color.rgb(250, 250, 250));
         drawable.setCornerRadius(dp(20));
         drawable.setStroke(dp(2), Color.rgb(221, 214, 254));
         return drawable;
@@ -543,15 +685,6 @@ public class ModeActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        params.setMargins(0, 0, 0, bottomMargin);
-        return params;
-    }
-
-    private LinearLayout.LayoutParams fullWidthHeightWithBottom(int height, int bottomMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                height
         );
         params.setMargins(0, 0, 0, bottomMargin);
         return params;

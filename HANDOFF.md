@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 5 — Sender Preview Cleanup + Capture Metrics
+Phase 6 — Sender H.264 Encoder Dry Run
 
 ## What exists
 
@@ -13,23 +13,25 @@ Phase 5 — Sender Preview Cleanup + Capture Metrics
 - `MediaProjectionKeepAliveService`
 - Sender Mode screen-capture permission flow
 - Sender Mode foreground capture session
-- Sender Mode local preview surface
-- Sender Mode capture metrics panel
-- Keep-screen-on while preview is active
+- Sender Mode local H.264 encoder dry run
+- MediaProjection feeding a MediaCodec input surface
+- Encoder drain thread that counts encoded output buffers
+- Encoder metrics panel
+- Keep-screen-on while encoder is active
 - Safer Back/onDestroy cleanup path
 - GitHub Actions workflow for debug APK
-- Phase 1 through Phase 5 verify scripts
+- Phase 1 through Phase 6 verify scripts
 
 ## Important constraints
 
-Do not add these in Phase 5:
+Do not add these in Phase 6:
 
 - RTMP
 - WebRTC
 - FFmpeg
-- MediaCodec video encoding
 - AudioPlaybackCapture
 - Real wireless sender/receiver
+- Video file recording
 - API keys
 - `.env`
 
@@ -37,18 +39,18 @@ Do not add these in Phase 5:
 
 1. Open MobileStudioV2.
 2. Open Sender Mode.
-3. Confirm Phase 5 label is visible.
-4. Confirm preview area and capture metrics panel are visible.
+3. Confirm Phase 6 label is visible.
+4. Confirm Encoder dry run panel and Encoder metrics panel are visible.
 5. Request screen-capture permission.
-6. Start Stable Preview.
-7. Confirm mirrored screen preview appears.
-8. Confirm metrics show screen size, preview surface size, orientation, uptime, keep-screen-on state, and FPS placeholder.
-9. Stop Stable Preview.
-10. Confirm preview stops and permission must be requested again.
-11. Start again, then press Back and confirm the app does not crash.
+6. Start Encoder Dry Run.
+7. Confirm status says H.264 encoder dry run active.
+8. Confirm encoded bytes or output count increases after a few seconds.
+9. Confirm metrics show encoder resolution, bitrate, FPS, key frames/config buffers, output format, uptime, and Network/File off.
+10. Stop Encoder Dry Run.
+11. Confirm it stops without crash and asks for permission again before restart.
 
 ## Next phase
 
-Phase 6 should prepare the sender frame pipeline only.
+Phase 7 should prepare a packet/buffer handoff layer for encoded H.264 data only.
 
 The next phase should still avoid RTMP, audio, and real two-phone wireless transport unless explicitly approved.

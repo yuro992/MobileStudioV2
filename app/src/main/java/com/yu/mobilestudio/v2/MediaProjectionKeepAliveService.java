@@ -17,7 +17,7 @@ public class MediaProjectionKeepAliveService extends Service {
     public static final String ACTION_STOP = "com.yu.mobilestudio.v2.action.STOP_MEDIA_PROJECTION_SERVICE";
 
     private static final String CHANNEL_ID = "mobilestudio_capture";
-    private static final int NOTIFICATION_ID = 4005;
+    private static final int NOTIFICATION_ID = 4006;
     private static volatile boolean running = false;
 
     public static boolean isRunning() {
@@ -87,7 +87,7 @@ public class MediaProjectionKeepAliveService extends Service {
                 "MobileStudio capture",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("Keeps the local screen preview capture session active.");
+        channel.setDescription("Keeps the H.264 encoder dry run capture session active.");
 
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
@@ -113,8 +113,8 @@ public class MediaProjectionKeepAliveService extends Service {
 
         return builder
                 .setSmallIcon(android.R.drawable.presence_video_online)
-                .setContentTitle("MobileStudioV2 preview active")
-                .setContentText("Local preview is running with capture metrics. No video is being sent.")
+                .setContentTitle("MobileStudioV2 encoder dry run active")
+                .setContentText("Screen is being encoded to H.264 dry-run buffers. Nothing is being sent.")
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
                 .build();

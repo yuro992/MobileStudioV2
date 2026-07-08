@@ -48,26 +48,34 @@ Show the phone screen inside the Sender Mode local preview surface.
 
 ## Phase 5 — Sender Preview Cleanup + Capture Metrics
 
-Status: CURRENT
+Status: PASS
 
 Goal:
 
 Stabilize Sender local preview before network work by adding basic capture metrics, keep-screen-on behavior, safer back handling, resource cleanup, and clearer preview state.
 
-Pass criteria:
+## Phase 6 — Sender H.264 Encoder Dry Run
 
-- Phase 5 UI appears
-- Sender preview still works
-- Metrics panel is visible
-- Metrics include screen size, dpi, preview surface size, orientation, uptime, keep-screen-on state, and FPS placeholder
-- Capture session starts and stops cleanly
-- Back/destroy releases capture resources
-- No video encoding, wireless transport, RTMP, WebRTC, FFmpeg, or audio capture implementation
-
-## Phase 6 — Sender Frame Pipeline Prep
+Status: CURRENT
 
 Goal:
 
-Prepare a frame-oriented pipeline for the sender side without sending video over the network yet.
+Encode the captured screen into local H.264 dry-run output buffers using MediaCodec, without saving, sending, streaming, or recording video.
 
-Do not start until Phase 5 is confirmed PASS.
+Pass criteria:
+
+- Phase 6 UI appears
+- Sender can request screen-capture permission
+- Sender can start Encoder Dry Run
+- MediaProjection feeds a MediaCodec H.264 input surface
+- Encoder metrics show resolution, bitrate, FPS, encoded bytes, output count, key frames, config buffers, and format
+- Sender can stop the encoder cleanly
+- No network video transport, RTMP, WebRTC, FFmpeg, audio capture, file output, or recording implementation
+
+## Phase 7 — Sender Packet Buffer / Local Transport Prep
+
+Goal:
+
+Prepare encoded H.264 buffers for later transport without connecting two phones yet.
+
+Do not start until Phase 6 is confirmed PASS.
