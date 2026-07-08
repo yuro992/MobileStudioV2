@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Canvas;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
@@ -68,6 +70,7 @@ public class ModeActivity extends Activity {
     private TextView requestButton;
     private TextView startButton;
     private TextView stopButton;
+    private TextView testPatternButton;
     private EditText ipInput;
     private EditText portInput;
     private SurfaceView studioPreviewView;
@@ -87,6 +90,9 @@ public class ModeActivity extends Activity {
     private MediaCodec videoEncoder;
     private Surface encoderInputSurface;
     private Thread encoderDrainThread;
+    private volatile boolean testPatternMode;
+    private volatile boolean testPatternRunning;
+    private Thread testPatternThread;
     private Thread senderAcceptThread;
     private Thread studioReadThread;
     private ServerSocket senderServerSocket;
@@ -234,6 +240,10 @@ public class ModeActivity extends Activity {
         startButton = actionButton("Start H.264 LAN Preview", Color.rgb(22, 101, 52));
         startButton.setOnClickListener(v -> startSenderLanDryRun());
         root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
+
+        testPatternButton = actionButton("Start Test Pattern LAN Preview", Color.rgb(2, 132, 199));
+        testPatternButton.setOnClickListener(v -> startSenderTestPatternLanPreview());
+        root.addView(testPatternButton, fullWidthWrapWithBottom(dp(10)));
 
         stopButton = actionButton("Stop H.264 LAN Preview", Color.rgb(185, 28, 28));
         stopButton.setOnClickListener(v -> releaseSenderSession(false, "H.264 LAN preview stopped. Request permission again."));
@@ -402,6 +412,121 @@ public class ModeActivity extends Activity {
         }
     }
 
+    private void startSenderTestPatternLanPreview() {
+        if (senderActive) {
+            return;
+        }
+
+        resetSenderCounters();
+        testPatternMode = true;
+        testPatternRunning = true;
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        setStatus("Starting H.264 test pattern LAN preview server and encoder...", true);
+        senderActive = true;
+        updateButtons();
+
+        try {
+            prepareEncoder();
+            startSenderAcceptThread();
+            videoEncoder.start();
+            startTestPatternDrawThread();
+            startEncoderDrainThread();
+            setStatus("H.264 test pattern LAN preview active. Waiting for Studio packet client", true);
+        } catch (Exception e) {
+            releaseSenderSession(false, "Failed to start test pattern LAN preview: " + safeMessage(e));
+        }
+    }
+
+    private void startTestPatternDrawThread() {
+        testPatternRunning = true;
+        testPatternThread = new Thread(() -> {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            long frame = 0L;
+            long nextFrameAtMs = System.currentTimeMillis();
+            final int frameDurationMs = Math.max(1, 1000 / TARGET_FPS);
+
+            while (senderActive && testPatternRunning && encoderInputSurface != null) {
+                Canvas canvas = null;
+                try {
+                    canvas = encoderInputSurface.lockCanvas(null);
+                    int width = Math.max(1, canvas.getWidth());
+                    int height = Math.max(1, canvas.getHeight());
+                    drawTestPatternFrame(canvas, paint, width, height, frame);
+                } catch (Exception e) {
+                    if (senderActive) {
+                        sendErrorCount++;
+                    }
+                } finally {
+                    if (canvas != null && encoderInputSurface != null) {
+                        try {
+                            encoderInputSurface.unlockCanvasAndPost(canvas);
+                        } catch (Exception e) {
+                            if (senderActive) {
+                                sendErrorCount++;
+                            }
+                        }
+                    }
+                }
+
+                frame++;
+                nextFrameAtMs += frameDurationMs;
+                long sleepMs = nextFrameAtMs - System.currentTimeMillis();
+                if (sleepMs < 1L || sleepMs > frameDurationMs) {
+                    sleepMs = frameDurationMs;
+                    nextFrameAtMs = System.currentTimeMillis() + frameDurationMs;
+                }
+                try {
+                    Thread.sleep(sleepMs);
+                } catch (InterruptedException ignored) {
+                    return;
+                }
+            }
+        }, "MobileStudioV2-Phase9B-TestPattern");
+        testPatternThread.start();
+    }
+
+    private void drawTestPatternFrame(Canvas canvas, Paint paint, int width, int height, long frame) {
+        int[] colors = new int[] {
+                Color.rgb(239, 68, 68),
+                Color.rgb(34, 197, 94),
+                Color.rgb(59, 130, 246),
+                Color.rgb(234, 179, 8),
+                Color.rgb(168, 85, 247),
+                Color.rgb(20, 184, 166)
+        };
+        int stripeHeight = Math.max(1, height / colors.length);
+        int offset = (int) ((frame / 15L) % colors.length);
+        for (int i = 0; i < colors.length; i++) {
+            paint.setColor(colors[(i + offset) % colors.length]);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawRect(0, i * stripeHeight, width, i == colors.length - 1 ? height : (i + 1) * stripeHeight, paint);
+        }
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.argb(220, 0, 0, 0));
+        float panelTop = height * 0.35f;
+        float panelBottom = height * 0.65f;
+        canvas.drawRect(width * 0.08f, panelTop, width * 0.92f, panelBottom, paint);
+
+        paint.setColor(Color.WHITE);
+        paint.setFakeBoldText(true);
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTextSize(Math.max(28f, width / 14f));
+        canvas.drawText("MobileStudioV2", width / 2f, panelTop + (panelBottom - panelTop) * 0.35f, paint);
+        paint.setTextSize(Math.max(22f, width / 20f));
+        paint.setFakeBoldText(false);
+        canvas.drawText("TEST PATTERN", width / 2f, panelTop + (panelBottom - panelTop) * 0.55f, paint);
+        canvas.drawText("frame " + frame, width / 2f, panelTop + (panelBottom - panelTop) * 0.75f, paint);
+
+        int boxSize = Math.max(40, Math.min(width, height) / 8);
+        int travel = Math.max(1, width - boxSize);
+        int boxLeft = (int) ((frame * 18L) % travel);
+        int boxTop = Math.max(0, height - boxSize - 12);
+        paint.setColor(Color.WHITE);
+        canvas.drawRect(boxLeft, boxTop, boxLeft + boxSize, boxTop + boxSize, paint);
+        paint.setTextAlign(Paint.Align.LEFT);
+    }
+
     private void resetSenderCounters() {
         sourceWidth = 0;
         sourceHeight = 0;
@@ -420,6 +545,8 @@ public class ModeActivity extends Activity {
         acceptedClients = 0;
         outputFormatSummary = "waiting";
         latestConfigPacket = null;
+        testPatternMode = false;
+        testPatternRunning = false;
     }
 
     private void prepareEncoder() throws IOException {
@@ -585,6 +712,12 @@ public class ModeActivity extends Activity {
     }
 
     private void releaseSenderSession(boolean finishing, String message) {
+        testPatternRunning = false;
+        testPatternMode = false;
+        if (testPatternThread != null) {
+            testPatternThread.interrupt();
+            testPatternThread = null;
+        }
         if (releasingSession) {
             return;
         }
@@ -908,7 +1041,7 @@ public class ModeActivity extends Activity {
                 "H.264 LAN metrics\n" +
                         "Endpoint: " + getLocalIpv4Address() + ":" + DEFAULT_PORT + "\n" +
                         "Server: " + (senderServerSocket != null && !senderServerSocket.isClosed() ? "active" : "inactive") + " | Client: " + (senderClientOut != null ? "connected" : "none") + " | Accepted: " + acceptedClients + "\n" +
-                        "Source: " + (sourceWidth > 0 ? sourceWidth + "x" + sourceHeight + " @ " + sourceDensity + " dpi" : "not active") + "\n" +
+                        "Source: " + (sourceWidth > 0 ? (testPatternMode ? "test pattern " : "") + sourceWidth + "x" + sourceHeight + " @ " + sourceDensity + " dpi" : "not active") + "\n" +
                         "Encoder: H.264 " + (encoderWidth > 0 ? encoderWidth + "x" + encoderHeight : "target pending") + " @ " + TARGET_FPS + " fps, " + String.format(Locale.US, "%.1f Mbps", TARGET_BITRATE / 1_000_000f) + "\n" +
                         "Encoded: " + readableBytes(encodedBytes) + " | Outputs: " + encodedOutputCount + " | Key: " + keyFrameCount + " | Config: " + codecConfigCount + "\n" +
                         "Sent: " + packetsSent + " packets | " + readableBytes(bytesSent) + " | Errors: " + sendErrorCount + "\n" +
@@ -940,6 +1073,7 @@ public class ModeActivity extends Activity {
         }
         setButtonEnabled(requestButton, !senderActive);
         setButtonEnabled(startButton, !senderActive && projectionPermissionData != null);
+        setButtonEnabled(testPatternButton, !senderActive);
         setButtonEnabled(stopButton, senderActive);
     }
 
