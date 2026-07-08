@@ -2,9 +2,9 @@
 
 MobileStudioV2 is a two-phone mobile live studio experiment.
 
-## Phase 3 status
+## Current status
 
-Phase 3 adds a safe MediaProjection foreground-service capture session in Sender Mode.
+Phase 4 is local screen preview.
 
 Current features:
 
@@ -14,43 +14,33 @@ Current features:
   - Sender Mode
   - Studio Mode
 - Sender Mode can request Android screen-capture permission
-- Sender Mode can start a foreground capture session after permission is granted
-- Sender Mode can stop the capture session
-- Capture service shows an Android notification while active
-- Sender Mode displays session status:
-  - Not requested
-  - Waiting for Android permission dialog
-  - Permission granted. Ready to start session
-  - Capture session starting
-  - Capture session active
-  - Capture session stopped
-- Studio Mode remains placeholder only
+- Sender Mode can start and stop a foreground capture session
+- Sender Mode can show the phone screen in a local preview surface
+- Studio Mode remains a placeholder
 - Verify script
 - GitHub Actions workflow for debug APK build
 
 ## Not included yet
 
-Phase 3 intentionally does not include:
+Phase 4 intentionally does not include:
 
-- Screen preview
-- Virtual display output
 - Video encoding
-- Internal audio capture
-- Wireless sender/receiver stream
-- RTMP
+- Wireless sender/receiver video transport
+- RTMP output
 - WebRTC
 - FFmpeg
+- Internal audio capture
 - Browser Source
 
 ## Verify
 
 ```bash
-bash scripts/verify_phase3.sh
+bash scripts/verify_phase4.sh
 ```
 
 ## Build
 
-GitHub Actions builds the debug APK.
+The APK build runs through GitHub Actions.
 
 Workflow file:
 

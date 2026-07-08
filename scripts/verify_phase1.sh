@@ -1,4 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/verify_phase3.sh"
+bash scripts/verify_phase4.sh

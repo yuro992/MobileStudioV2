@@ -1,51 +1,53 @@
 package com.yu.mobilestudio.v2;
 
 import android.app.Activity;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 public class ModeActivity extends Activity {
 
-    private static final int REQUEST_SCREEN_CAPTURE = 2003;
+    private static final int REQUEST_CAPTURE_PERMISSION = 2402;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private String mode;
-    private TextView statusText;
+    private TextView statusView;
     private TextView requestButton;
     private TextView startButton;
     private TextView stopButton;
-    private int projectionResultCode = 0;
-    private Intent projectionResultData;
-    private boolean receiverRegistered = false;
+    private SurfaceView previewSurfaceView;
 
-    private final BroadcastReceiver captureStatusReceiver = new BroadcastReceiver() {
+    private Intent projectionPermissionData;
+    private int projectionPermissionResultCode = Activity.RESULT_CANCELED;
+    private MediaProjection mediaProjection;
+    private VirtualDisplay virtualDisplay;
+    private boolean surfaceReady = false;
+    private boolean captureActive = false;
+    private boolean releasingSession = false;
+
+    private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent == null || !CaptureService.ACTION_STATUS.equals(intent.getAction())) {
-                return;
-            }
-
-            String status = intent.getStringExtra(CaptureService.EXTRA_STATUS);
-            boolean success = intent.getBooleanExtra(CaptureService.EXTRA_SUCCESS, false);
-            if (status == null || status.trim().isEmpty()) {
-                return;
-            }
-
-            setStatus("Status: " + status, success);
-            if (!success && (status.contains("stopped") || status.contains("failed"))) {
-                clearProjectionPermissionForNextSession();
-            }
-            updateSessionButtons(success);
+        public void onStop() {
+            mainHandler.post(() -> releaseCaptureSession(false, "Capture preview stopped by Android. Request permission again."));
         }
     };
 
@@ -60,144 +62,301 @@ public class ModeActivity extends Activity {
 
         setTitle(mode + " Mode");
 
-        boolean isSender = "Sender".equalsIgnoreCase(mode);
-
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setPadding(dp(24), dp(24), dp(24), dp(24));
-        root.setBackgroundColor(Color.rgb(250, 250, 255));
-
-        TextView badge = new TextView(this);
-        badge.setText("Phase 3");
-        badge.setTextSize(14);
-        badge.setTypeface(Typeface.DEFAULT_BOLD);
-        badge.setTextColor(Color.rgb(124, 58, 237));
-        badge.setGravity(Gravity.CENTER);
-        badge.setPadding(dp(14), dp(8), dp(14), dp(8));
-        badge.setBackground(makeRoundedBackground(Color.rgb(237, 233, 254), dp(18)));
-        root.addView(badge, wrapWithBottom(dp(22)));
-
-        TextView title = new TextView(this);
-        title.setText(mode + " Mode Ready");
-        title.setTextSize(28);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.rgb(28, 25, 23));
-        title.setGravity(Gravity.CENTER);
-        root.addView(title, fullWidthWrapWithBottom(dp(12)));
-
-        TextView description = new TextView(this);
-        if (isSender) {
-            description.setText("Request permission, then start a foreground capture session. This phase does not preview, encode, stream, or record yet.");
+        if ("Sender".equals(mode)) {
+            buildSenderScreen();
         } else {
-            description.setText("Studio Mode is still a placeholder in Phase 3. Real receiving and layout tools come later.");
+            buildStudioPlaceholderScreen();
         }
-        description.setTextSize(15);
-        description.setTextColor(Color.rgb(87, 83, 78));
-        description.setGravity(Gravity.CENTER);
-        root.addView(description, fullWidthWrapWithBottom(dp(22)));
-
-        statusText = new TextView(this);
-        statusText.setText(isSender ? "Status: Not requested" : "Status: Studio placeholder only");
-        statusText.setTextSize(15);
-        statusText.setTypeface(Typeface.DEFAULT_BOLD);
-        statusText.setTextColor(Color.rgb(68, 64, 60));
-        statusText.setGravity(Gravity.CENTER);
-        statusText.setPadding(dp(14), dp(10), dp(14), dp(10));
-        statusText.setBackground(makeRoundedBackground(Color.WHITE, dp(18)));
-        root.addView(statusText, fullWidthWrapWithBottom(dp(18)));
-
-        if (isSender) {
-            requestButton = makeButton("Request Screen Capture Permission", Color.rgb(124, 58, 237), Color.WHITE);
-            requestButton.setOnClickListener(v -> requestScreenCapturePermission());
-            root.addView(requestButton, fullWidthWrapWithBottom(dp(12)));
-
-            startButton = makeButton("Start Capture Session", Color.rgb(22, 101, 52), Color.WHITE);
-            startButton.setOnClickListener(v -> startCaptureSession());
-            root.addView(startButton, fullWidthWrapWithBottom(dp(12)));
-
-            stopButton = makeButton("Stop Capture Session", Color.rgb(185, 28, 28), Color.WHITE);
-            stopButton.setOnClickListener(v -> stopCaptureSession());
-            root.addView(stopButton, fullWidthWrapWithBottom(dp(18)));
-
-            updatePermissionButtons(false);
-            updateSessionButtons(false);
-        }
-
-        TextView back = makeButton("Back", Color.rgb(39, 39, 42), Color.WHITE);
-        back.setOnClickListener(v -> finish());
-        root.addView(back, wrap());
-
-        setContentView(root);
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        registerCaptureStatusReceiver();
-    }
-
-    @Override
-    protected void onPause() {
-        unregisterCaptureStatusReceiver();
-        super.onPause();
-    }
-
-    private void requestScreenCapturePermission() {
-        MediaProjectionManager projectionManager =
-                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-
-        if (projectionManager == null) {
-            setStatus("Status: Screen-capture service unavailable", false);
-            return;
-        }
-
-        setStatus("Status: Waiting for Android permission dialog...", false);
-        Intent captureIntent = projectionManager.createScreenCaptureIntent();
-        startActivityForResult(captureIntent, REQUEST_SCREEN_CAPTURE);
+    protected void onDestroy() {
+        releaseCaptureSession(true, null);
+        super.onDestroy();
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode != REQUEST_SCREEN_CAPTURE) {
+        if (requestCode != REQUEST_CAPTURE_PERMISSION) {
             return;
         }
 
-        if (resultCode == RESULT_OK && data != null) {
-            projectionResultCode = resultCode;
-            projectionResultData = data;
-            setStatus("Status: Permission granted. Ready to start session", true);
-            if (requestButton != null) {
-                requestButton.setText("Request Again");
-            }
-            updatePermissionButtons(true);
-            updateSessionButtons(false);
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            projectionPermissionResultCode = resultCode;
+            projectionPermissionData = data;
+            setStatus("Permission granted. Ready to start preview", Color.rgb(21, 128, 61));
         } else {
-            projectionResultCode = 0;
-            projectionResultData = null;
-            setStatus("Status: Permission denied or cancelled", false);
-            updatePermissionButtons(false);
-            updateSessionButtons(false);
+            projectionPermissionResultCode = Activity.RESULT_CANCELED;
+            projectionPermissionData = null;
+            setStatus("Screen capture permission denied", Color.rgb(185, 28, 28));
+        }
+
+        updateButtons();
+    }
+
+    private void buildSenderScreen() {
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setBackgroundColor(Color.rgb(250, 250, 255));
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.setPadding(dp(24), dp(32), dp(24), dp(24));
+        scrollView.addView(root, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView badge = makeBadge("Phase 4");
+        root.addView(badge, wrapWithBottom(dp(18)));
+
+        TextView title = makeText("Sender Mode Ready", 28, Color.rgb(28, 25, 23), true);
+        title.setGravity(Gravity.CENTER);
+        root.addView(title, fullWidthWrapWithBottom(dp(12)));
+
+        TextView description = makeText(
+                "Request permission, then start a local screen preview. This phase does not encode, send, or record video yet.",
+                15,
+                Color.rgb(87, 83, 78),
+                false
+        );
+        description.setGravity(Gravity.CENTER);
+        root.addView(description, fullWidthWrapWithBottom(dp(18)));
+
+        FrameLayout previewFrame = new FrameLayout(this);
+        previewFrame.setPadding(dp(2), dp(2), dp(2), dp(2));
+        previewFrame.setBackground(makePreviewBackground());
+
+        previewSurfaceView = new SurfaceView(this);
+        previewSurfaceView.setZOrderOnTop(false);
+        previewSurfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                surfaceReady = true;
+                updateButtons();
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                surfaceReady = true;
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                surfaceReady = false;
+                if (captureActive) {
+                    releaseCaptureSession(true, "Preview surface was destroyed. Request permission again.");
+                }
+                updateButtons();
+            }
+        });
+
+        previewFrame.addView(previewSurfaceView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        root.addView(previewFrame, fullWidthHeightWithBottom(dp(250), dp(16)));
+
+        statusView = makeText("Status: Not requested", 15, Color.rgb(68, 64, 60), true);
+        statusView.setGravity(Gravity.CENTER);
+        statusView.setPadding(dp(12), dp(12), dp(12), dp(12));
+        statusView.setBackground(makeRoundedBackground(Color.WHITE, dp(18)));
+        root.addView(statusView, fullWidthWrapWithBottom(dp(16)));
+
+        requestButton = makeButton("Request Screen Capture Permission", Color.rgb(124, 58, 237));
+        requestButton.setOnClickListener(v -> requestScreenCapturePermission());
+        root.addView(requestButton, fullWidthWrapWithBottom(dp(10)));
+
+        startButton = makeButton("Start Local Preview", Color.rgb(21, 128, 61));
+        startButton.setOnClickListener(v -> startLocalPreview());
+        root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
+
+        stopButton = makeButton("Stop Local Preview", Color.rgb(185, 28, 28));
+        stopButton.setOnClickListener(v -> releaseCaptureSession(true, "Capture preview stopped. Request permission again."));
+        root.addView(stopButton, fullWidthWrapWithBottom(dp(14)));
+
+        TextView back = makeButton("Back", Color.rgb(39, 39, 42));
+        back.setOnClickListener(v -> finish());
+        root.addView(back, wrap());
+
+        updateButtons();
+        setContentView(scrollView);
+    }
+
+    private void buildStudioPlaceholderScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER);
+        root.setPadding(dp(24), dp(24), dp(24), dp(24));
+        root.setBackgroundColor(Color.rgb(250, 250, 255));
+
+        root.addView(makeBadge("Phase 4"), wrapWithBottom(dp(22)));
+
+        TextView title = makeText("Studio Mode Ready", 28, Color.rgb(28, 25, 23), true);
+        title.setGravity(Gravity.CENTER);
+        root.addView(title, fullWidthWrapWithBottom(dp(12)));
+
+        TextView description = makeText(
+                "Studio receiver is still a placeholder. Sender local preview comes first.",
+                15,
+                Color.rgb(87, 83, 78),
+                false
+        );
+        description.setGravity(Gravity.CENTER);
+        root.addView(description, fullWidthWrapWithBottom(dp(28)));
+
+        TextView back = makeButton("Back", Color.rgb(39, 39, 42));
+        back.setOnClickListener(v -> finish());
+        root.addView(back, wrap());
+
+        setContentView(root);
+    }
+
+    private void requestScreenCapturePermission() {
+        if (captureActive) {
+            setStatus("Stop the active preview before requesting again", Color.rgb(185, 28, 28));
+            return;
+        }
+
+        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        if (manager == null) {
+            setStatus("MediaProjectionManager unavailable", Color.rgb(185, 28, 28));
+            return;
+        }
+
+        setStatus("Waiting for Android screen-capture permission", Color.rgb(124, 58, 237));
+        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE_PERMISSION);
+    }
+
+    private void startLocalPreview() {
+        if (captureActive) {
+            setStatus("Capture preview already active", Color.rgb(21, 128, 61));
+            return;
+        }
+
+        if (projectionPermissionData == null || projectionPermissionResultCode != Activity.RESULT_OK) {
+            setStatus("Request screen-capture permission first", Color.rgb(185, 28, 28));
+            requestScreenCapturePermission();
+            return;
+        }
+
+        if (!surfaceReady || previewSurfaceView == null || !previewSurfaceView.getHolder().getSurface().isValid()) {
+            setStatus("Preview surface not ready yet. Try again in a moment.", Color.rgb(185, 28, 28));
+            return;
+        }
+
+        setStatus("Starting foreground preview service", Color.rgb(124, 58, 237));
+        startKeepAliveService();
+        waitForServiceThenCreatePreview(0);
+    }
+
+    private void waitForServiceThenCreatePreview(int attempt) {
+        if (MediaProjectionKeepAliveService.isRunning() || attempt >= 12) {
+            createVirtualDisplayPreview();
+            return;
+        }
+
+        mainHandler.postDelayed(() -> waitForServiceThenCreatePreview(attempt + 1), 150);
+    }
+
+    private void createVirtualDisplayPreview() {
+        try {
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager == null) {
+                setStatus("MediaProjectionManager unavailable", Color.rgb(185, 28, 28));
+                stopKeepAliveService();
+                return;
+            }
+
+            mediaProjection = manager.getMediaProjection(projectionPermissionResultCode, projectionPermissionData);
+            if (mediaProjection == null) {
+                setStatus("Could not create MediaProjection. Request permission again.", Color.rgb(185, 28, 28));
+                stopKeepAliveService();
+                return;
+            }
+
+            mediaProjection.registerCallback(projectionCallback, mainHandler);
+
+            DisplayMetrics metrics = new DisplayMetrics();
+            getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+
+            int width = Math.max(metrics.widthPixels, 1);
+            int height = Math.max(metrics.heightPixels, 1);
+            int density = metrics.densityDpi;
+
+            virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "MobileStudioV2LocalPreview",
+                    width,
+                    height,
+                    density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    previewSurfaceView.getHolder().getSurface(),
+                    null,
+                    mainHandler
+            );
+
+            if (virtualDisplay == null) {
+                releaseCaptureSession(true, "Could not create VirtualDisplay. Request permission again.");
+                return;
+            }
+
+            captureActive = true;
+            setStatus("Capture preview active", Color.rgb(21, 128, 61));
+            updateButtons();
+        } catch (Exception exception) {
+            releaseCaptureSession(true, "Preview failed: " + exception.getClass().getSimpleName());
         }
     }
 
-    private void startCaptureSession() {
-        if (projectionResultCode == 0 || projectionResultData == null) {
-            setStatus("Status: Request permission before starting session", false);
-            updatePermissionButtons(false);
-            updateSessionButtons(false);
+    private void releaseCaptureSession(boolean stopProjection, String message) {
+        if (releasingSession) {
             return;
         }
 
-        setStatus("Status: Capture session starting...", false);
+        releasingSession = true;
 
-        Intent intent = new Intent(this, CaptureService.class);
-        intent.setAction(CaptureService.ACTION_START);
-        intent.putExtra(CaptureService.EXTRA_RESULT_CODE, projectionResultCode);
-        intent.putExtra(CaptureService.EXTRA_RESULT_DATA, projectionResultData);
+        if (virtualDisplay != null) {
+            try {
+                virtualDisplay.release();
+            } catch (Exception ignored) {
+            }
+            virtualDisplay = null;
+        }
 
+        MediaProjection projectionToStop = mediaProjection;
+        if (projectionToStop != null) {
+            try {
+                projectionToStop.unregisterCallback(projectionCallback);
+            } catch (Exception ignored) {
+            }
+            mediaProjection = null;
+            if (stopProjection) {
+                try {
+                    projectionToStop.stop();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        captureActive = false;
+        projectionPermissionData = null;
+        projectionPermissionResultCode = Activity.RESULT_CANCELED;
+        stopKeepAliveService();
+
+        if (message != null) {
+            setStatus(message, Color.rgb(68, 64, 60));
+        }
+
+        updateButtons();
+        releasingSession = false;
+    }
+
+    private void startKeepAliveService() {
+        Intent intent = MediaProjectionKeepAliveService.startIntent(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
@@ -205,88 +364,74 @@ public class ModeActivity extends Activity {
         }
     }
 
-    private void stopCaptureSession() {
-        Intent intent = new Intent(this, CaptureService.class);
-        intent.setAction(CaptureService.ACTION_STOP);
-        startService(intent);
-        clearProjectionPermissionForNextSession();
-        setStatus("Status: Capture session stopping...", false);
-        updateSessionButtons(false);
-    }
-
-    private void registerCaptureStatusReceiver() {
-        if (receiverRegistered) {
-            return;
-        }
-
-        IntentFilter filter = new IntentFilter(CaptureService.ACTION_STATUS);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(captureStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(captureStatusReceiver, filter);
-        }
-        receiverRegistered = true;
-    }
-
-    private void unregisterCaptureStatusReceiver() {
-        if (!receiverRegistered) {
-            return;
-        }
-
+    private void stopKeepAliveService() {
         try {
-            unregisterReceiver(captureStatusReceiver);
-        } finally {
-            receiverRegistered = false;
+            startService(MediaProjectionKeepAliveService.stopIntent(this));
+        } catch (Exception ignored) {
         }
     }
 
-    private void setStatus(String value, boolean success) {
-        if (statusText == null) {
+    private void setStatus(String status, int color) {
+        if (statusView == null) {
             return;
         }
-        statusText.setText(value);
-        statusText.setTextColor(success ? Color.rgb(22, 101, 52) : Color.rgb(68, 64, 60));
+        statusView.setText("Status: " + status);
+        statusView.setTextColor(color);
     }
 
-    private void clearProjectionPermissionForNextSession() {
-        projectionResultCode = 0;
-        projectionResultData = null;
+    private void updateButtons() {
+        boolean hasPermission = projectionPermissionData != null && projectionPermissionResultCode == Activity.RESULT_OK;
+
         if (requestButton != null) {
-            requestButton.setText("Request Again");
-        }
-    }
-
-    private void updatePermissionButtons(boolean hasPermission) {
-        if (startButton == null) {
-            return;
+            requestButton.setText(hasPermission ? "Request Again" : "Request Screen Capture Permission");
+            requestButton.setEnabled(!captureActive);
+            requestButton.setAlpha(captureActive ? 0.55f : 1.0f);
         }
 
-        startButton.setEnabled(hasPermission);
-        startButton.setAlpha(hasPermission ? 1.0f : 0.42f);
-    }
-
-    private void updateSessionButtons(boolean sessionActive) {
         if (startButton != null) {
-            startButton.setEnabled(!sessionActive && projectionResultCode != 0 && projectionResultData != null);
-            startButton.setAlpha(startButton.isEnabled() ? 1.0f : 0.42f);
+            startButton.setEnabled(hasPermission && surfaceReady && !captureActive);
+            startButton.setAlpha((hasPermission && surfaceReady && !captureActive) ? 1.0f : 0.45f);
         }
 
         if (stopButton != null) {
-            stopButton.setEnabled(sessionActive);
-            stopButton.setAlpha(sessionActive ? 1.0f : 0.42f);
+            stopButton.setEnabled(captureActive);
+            stopButton.setAlpha(captureActive ? 1.0f : 0.45f);
         }
     }
 
-    private TextView makeButton(String text, int backgroundColor, int textColor) {
-        TextView button = new TextView(this);
-        button.setText(text);
-        button.setTextSize(16);
-        button.setTypeface(Typeface.DEFAULT_BOLD);
-        button.setTextColor(textColor);
+    private TextView makeBadge(String text) {
+        TextView badge = makeText(text, 14, Color.rgb(124, 58, 237), true);
+        badge.setGravity(Gravity.CENTER);
+        badge.setPadding(dp(14), dp(8), dp(14), dp(8));
+        badge.setBackground(makeRoundedBackground(Color.rgb(237, 233, 254), dp(18)));
+        return badge;
+    }
+
+    private TextView makeText(String text, int size, int color, boolean bold) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        if (bold) {
+            view.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+        return view;
+    }
+
+    private TextView makeButton(String text, int color) {
+        TextView button = makeText(text, 16, Color.WHITE, true);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(18), dp(12), dp(18), dp(12));
-        button.setBackground(makeRoundedBackground(backgroundColor, dp(18)));
+        button.setPadding(dp(18), dp(14), dp(18), dp(14));
+        button.setBackground(makeRoundedBackground(color, dp(18)));
         return button;
+    }
+
+    private GradientDrawable makePreviewBackground() {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(Color.rgb(24, 24, 27));
+        drawable.setCornerRadius(dp(20));
+        drawable.setStroke(dp(2), Color.rgb(221, 214, 254));
+        return drawable;
     }
 
     private GradientDrawable makeRoundedBackground(int color, int radius) {
@@ -300,6 +445,15 @@ public class ModeActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(0, 0, 0, bottomMargin);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams fullWidthHeightWithBottom(int height, int bottomMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                height
         );
         params.setMargins(0, 0, 0, bottomMargin);
         return params;

@@ -18,57 +18,43 @@ Required tools:
 
 Status: PASS
 
-Completed:
-
-- Android project exists
-- Package name is `com.yu.mobilestudio.v2`
-- App name is `MobileStudioV2`
-- Main screen shows Sender Mode and Studio Mode
-- Sender Mode opens placeholder screen
-- Studio Mode opens placeholder screen
-- Verify script exists and passes
-- GitHub Actions workflow exists and builds APK
+Created minimal Android app with Sender Mode and Studio Mode placeholders.
 
 ## Phase 2 — Screen Capture Permission Flow
 
 Status: PASS
 
-Completed:
-
-- Sender Mode has a screen-capture permission button
-- Android permission dialog opens
-- Granting permission updates status to `Screen capture permission granted`
-- Cancelling/denying permission updates status to `Permission denied or cancelled`
-- Studio Mode remains placeholder only
-- Verify script exists and passes
-- GitHub Actions workflow builds debug APK
+Added Android MediaProjection permission request flow in Sender Mode.
 
 ## Phase 3 — MediaProjection Capture Session
 
-Status: IN PROGRESS
+Status: PASS
+
+Added foreground capture session start/stop behavior and keep-alive notification.
+
+## Phase 4 — Local Screen Preview
+
+Status: CURRENT
 
 Goal:
 
-After permission is granted, start and stop a safe MediaProjection foreground-service session.
+Show the phone screen inside Sender Mode using MediaProjection, VirtualDisplay, and SurfaceView.
 
 Pass criteria:
 
-- Sender Mode can request screen-capture permission
-- Sender Mode can start capture session after permission is granted
-- A foreground service of type `mediaProjection` is declared
-- Capture service calls `getMediaProjection`
-- Capture service registers `MediaProjection.Callback`
-- Capture service displays foreground notification while active
-- Sender Mode can stop capture session
-- Sender Mode receives service status updates
-- Verify script exists and passes
-- GitHub Actions workflow builds debug APK
-- No preview, virtual display output, encoding, audio, wireless stream, RTMP, WebRTC, or FFmpeg implementation
+- Sender Mode has a preview surface
+- Android screen-capture permission can be requested
+- Foreground capture service starts
+- VirtualDisplay is created after permission is granted
+- Local preview starts and stops
+- No video encoding, RTMP, WebRTC, FFmpeg, wireless sender/receiver, or internal audio capture implementation
 
-## Phase 4 — Local Capture Preview
+## Phase 5 — Preview Stability + Orientation Handling
+
+Status: NEXT
 
 Goal:
 
-Create a local preview path by attaching the active capture session to a display surface.
+Make local preview more stable across rotation, app background/foreground, screen size changes, and repeated start/stop cycles.
 
-Do not start until Phase 3 is confirmed PASS.
+Do not start until Phase 4 is confirmed PASS.
