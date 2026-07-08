@@ -23,6 +23,8 @@ import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -47,8 +49,8 @@ import java.util.Locale;
 public class ModeActivity extends Activity {
 
     private static final int REQUEST_CAPTURE_PERMISSION = 2602;
-    private static final int DEFAULT_PORT = 56790;
-    private static final int PACKET_MAGIC = 0x4D535638; // MSV8
+    private static final int DEFAULT_PORT = 56791;
+    private static final int PACKET_MAGIC = 0x4D535639; // MSV9
     private static final int PACKET_CONFIG = 1;
     private static final int PACKET_KEY_FRAME = 2;
     private static final int PACKET_DELTA_FRAME = 3;
@@ -68,6 +70,8 @@ public class ModeActivity extends Activity {
     private TextView stopButton;
     private EditText ipInput;
     private EditText portInput;
+    private SurfaceView studioPreviewView;
+    private Surface decoderOutputSurface;
 
     private Intent projectionPermissionData;
     private int projectionPermissionResultCode = Activity.RESULT_CANCELED;
@@ -115,6 +119,15 @@ public class ModeActivity extends Activity {
     private long studioDeltaFramesReceived = 0L;
     private long studioLastPacketAtMs = 0L;
     private String studioLastPacketSummary = "none";
+    private MediaCodec videoDecoder;
+    private int decoderWidth = 0;
+    private int decoderHeight = 0;
+    private long decodedFrameCount = 0L;
+    private long decoderInputDropCount = 0L;
+    private long decoderErrorCount = 0L;
+    private long decoderFormatChangeCount = 0L;
+    private long lastDecodedFrameAtMs = 0L;
+    private String decoderFormatSummary = "waiting";
 
     private final Runnable metricsTicker = new Runnable() {
         @Override
@@ -127,7 +140,7 @@ public class ModeActivity extends Activity {
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
         public void onStop() {
-            mainHandler.post(() -> releaseSenderSession(false, "H.264 LAN dry run stopped by Android. Request permission again."));
+            mainHandler.post(() -> releaseSenderSession(false, "H.264 LAN preview stopped by Android. Request permission again."));
         }
     };
 
@@ -176,7 +189,7 @@ public class ModeActivity extends Activity {
         if (resultCode == Activity.RESULT_OK && data != null) {
             projectionPermissionResultCode = resultCode;
             projectionPermissionData = data;
-            setStatus("Permission granted. Ready to start H.264 LAN dry run", true);
+            setStatus("Permission granted. Ready to start H.264 LAN preview", true);
         } else {
             projectionPermissionResultCode = Activity.RESULT_CANCELED;
             projectionPermissionData = null;
@@ -191,9 +204,9 @@ public class ModeActivity extends Activity {
         LinearLayout root = baseContent();
         addBadge(root);
         addTitle(root, "Sender Mode Ready");
-        addDescription(root, "Encode screen buffers and send H.264 packet chunks to Studio over LAN. Transport test only; later-stage live features are disabled.");
+        addDescription(root, "Encode screen buffers and send H.264 packet chunks to Studio over LAN for decode preview testing.");
 
-        root.addView(infoBox("Sender H.264 LAN endpoint\nIP: " + getLocalIpv4Address() + "\nPort: " + DEFAULT_PORT + "\nProtocol: TCP framed packet dry run"), fullWidthWrapWithBottom(dp(14)));
+        root.addView(infoBox("Sender H.264 LAN endpoint\nIP: " + getLocalIpv4Address() + "\nPort: " + DEFAULT_PORT + "\nProtocol: TCP framed packet preview"), fullWidthWrapWithBottom(dp(14)));
 
         statusView = statusBox("Status: Not requested", false);
         root.addView(statusView, fullWidthWrapWithBottom(dp(14)));
@@ -205,12 +218,12 @@ public class ModeActivity extends Activity {
         requestButton.setOnClickListener(v -> requestCapturePermission());
         root.addView(requestButton, fullWidthWrapWithBottom(dp(10)));
 
-        startButton = actionButton("Start H.264 LAN Dry Run", Color.rgb(22, 101, 52));
+        startButton = actionButton("Start H.264 LAN Preview", Color.rgb(22, 101, 52));
         startButton.setOnClickListener(v -> startSenderLanDryRun());
         root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
 
-        stopButton = actionButton("Stop H.264 LAN Dry Run", Color.rgb(185, 28, 28));
-        stopButton.setOnClickListener(v -> releaseSenderSession(false, "H.264 LAN dry run stopped. Request permission again."));
+        stopButton = actionButton("Stop H.264 LAN Preview", Color.rgb(185, 28, 28));
+        stopButton.setOnClickListener(v -> releaseSenderSession(false, "H.264 LAN preview stopped. Request permission again."));
         root.addView(stopButton, fullWidthWrapWithBottom(dp(18)));
 
         TextView backButton = actionButton("Back", Color.rgb(39, 39, 42));
@@ -225,7 +238,33 @@ public class ModeActivity extends Activity {
         LinearLayout root = baseContent();
         addBadge(root);
         addTitle(root, "Studio Mode Ready");
-        addDescription(root, "Connect to Sender over Wi-Fi/LAN and receive H.264 packets. This phase counts packet data only; it does not decode video yet.");
+        addDescription(root, "Connect to Sender over Wi-Fi/LAN, receive H.264 packets, and render a decode preview.");
+
+        studioPreviewView = new SurfaceView(this);
+        studioPreviewView.setBackgroundColor(Color.BLACK);
+        studioPreviewView.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                decoderOutputSurface = holder.getSurface();
+                setStatus("Preview surface ready. Connect to Sender", true);
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                decoderOutputSurface = holder.getSurface();
+                updateMetrics();
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                decoderOutputSurface = null;
+                releaseStudioDecoder();
+                if (studioClientRunning) {
+                    setStatus("Preview surface lost. Disconnect and reconnect", false);
+                }
+            }
+        });
+        root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
 
         ipInput = new EditText(this);
         ipInput.setText(getBestDefaultStudioIp());
@@ -248,13 +287,13 @@ public class ModeActivity extends Activity {
         portInput.setBackground(makeRoundedBackground(Color.WHITE, dp(18), Color.rgb(221, 214, 254)));
         root.addView(portInput, fullWidthWrapWithBottom(dp(16)));
 
-        statusView = statusBox("Status: Not connected", false);
+        statusView = statusBox("Status: Preview surface starting", false);
         root.addView(statusView, fullWidthWrapWithBottom(dp(14)));
 
-        metricsView = metricsBox("Packet receive metrics\nClient: inactive\nPackets received: 0 | Bytes received: 0\nConfig: 0 | Key frames: 0 | Delta: 0\nLast packet: none");
+        metricsView = metricsBox("Decode preview metrics\nClient: inactive\nPackets received: 0 | Bytes received: 0\nDecoded frames: 0 | Drops: 0 | Errors: 0\nDecoder: waiting");
         root.addView(metricsView, fullWidthWrapWithBottom(dp(16)));
 
-        startButton = actionButton("Connect to Sender", Color.rgb(22, 101, 52));
+        startButton = actionButton("Connect + Decode Preview", Color.rgb(22, 101, 52));
         startButton.setOnClickListener(v -> startStudioClient());
         root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
 
@@ -296,7 +335,7 @@ public class ModeActivity extends Activity {
             return;
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        setStatus("Starting H.264 LAN dry run server and encoder...", true);
+        setStatus("Starting H.264 LAN preview server and encoder...", true);
         senderActive = true;
         updateButtons();
 
@@ -318,9 +357,9 @@ public class ModeActivity extends Activity {
             createVirtualDisplay();
             startEncoderDrainThread();
 
-            setStatus("H.264 LAN dry run active. Waiting for Studio packet client", true);
+            setStatus("H.264 LAN preview active. Waiting for Studio packet client", true);
         } catch (Exception e) {
-            releaseSenderSession(false, "Failed to start H.264 LAN dry run: " + safeMessage(e));
+            releaseSenderSession(false, "Failed to start H.264 LAN preview: " + safeMessage(e));
         }
     }
 
@@ -368,7 +407,7 @@ public class ModeActivity extends Activity {
 
     private void createVirtualDisplay() {
         virtualDisplay = mediaProjection.createVirtualDisplay(
-                "MobileStudioV2-Phase8-LanDryRun",
+                "MobileStudioV2-Phase9-LanDecodePreview",
                 encoderWidth,
                 encoderHeight,
                 sourceDensity,
@@ -395,7 +434,7 @@ public class ModeActivity extends Activity {
                     }
                 }
             }
-        }, "MobileStudioV2-Phase8-SenderAccept");
+        }, "MobileStudioV2-Phase9-SenderAccept");
         senderAcceptThread.start();
     }
 
@@ -469,7 +508,7 @@ public class ModeActivity extends Activity {
                     }
                 }
             }
-        }, "MobileStudioV2-Phase8-EncoderDrain");
+        }, "MobileStudioV2-Phase9-EncoderDrain");
         encoderDrainThread.start();
     }
 
@@ -482,6 +521,8 @@ public class ModeActivity extends Activity {
         out.writeLong(System.currentTimeMillis());
         out.writeLong(ptsUs);
         out.writeInt(flags);
+        out.writeInt(encoderWidth);
+        out.writeInt(encoderHeight);
         out.writeInt(data.length);
         out.write(data);
         out.flush();
@@ -583,6 +624,19 @@ public class ModeActivity extends Activity {
         studioDeltaFramesReceived = 0L;
         studioLastPacketAtMs = 0L;
         studioLastPacketSummary = "none";
+        decodedFrameCount = 0L;
+        decoderInputDropCount = 0L;
+        decoderErrorCount = 0L;
+        decoderFormatChangeCount = 0L;
+        lastDecodedFrameAtMs = 0L;
+        decoderFormatSummary = "waiting";
+        releaseStudioDecoder();
+        if (decoderOutputSurface == null || !decoderOutputSurface.isValid()) {
+            studioClientRunning = false;
+            setStatus("Preview surface not ready yet", false);
+            updateButtons();
+            return;
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setStatus("Connecting to " + host + ":" + port + "...", true);
         updateButtons();
@@ -606,6 +660,7 @@ public class ModeActivity extends Activity {
                 }
             } finally {
                 closeStudioSocketQuietly();
+                releaseStudioDecoder();
                 studioClientRunning = false;
                 mainHandler.post(() -> {
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -613,7 +668,7 @@ public class ModeActivity extends Activity {
                     updateMetrics();
                 });
             }
-        }, "MobileStudioV2-Phase8-StudioRead");
+        }, "MobileStudioV2-Phase9-StudioRead");
         studioReadThread.start();
     }
 
@@ -627,6 +682,8 @@ public class ModeActivity extends Activity {
         long sentAtMs = input.readLong();
         long ptsUs = input.readLong();
         int flags = input.readInt();
+        int packetWidth = input.readInt();
+        int packetHeight = input.readInt();
         int size = input.readInt();
         if (size < 0 || size > 2_000_000) {
             throw new IOException("Bad packet size: " + size);
@@ -650,12 +707,112 @@ public class ModeActivity extends Activity {
             label = "delta";
         }
         studioLastPacketSummary = label + " seq=" + sequence + " size=" + readableBytes(size) + " latency=" + Math.max(0L, studioLastPacketAtMs - sentAtMs) + "ms pts=" + ptsUs + " flags=" + flags;
-        mainHandler.post(() -> setStatus("Connected. H.264 packets received", true));
+
+        feedStudioDecoder(type, data, flags, ptsUs, packetWidth, packetHeight);
+        mainHandler.post(() -> setStatus("Connected. Decode preview active", true));
+    }
+
+    private synchronized void feedStudioDecoder(int type, byte[] data, int flags, long ptsUs, int packetWidth, int packetHeight) {
+        if (decoderOutputSurface == null || !decoderOutputSurface.isValid()) {
+            decoderErrorCount++;
+            return;
+        }
+
+        try {
+            ensureStudioDecoder(packetWidth, packetHeight);
+            int inputIndex = videoDecoder.dequeueInputBuffer(2_000);
+            if (inputIndex < 0) {
+                decoderInputDropCount++;
+                return;
+            }
+
+            ByteBuffer inputBuffer = videoDecoder.getInputBuffer(inputIndex);
+            if (inputBuffer == null || data.length > inputBuffer.capacity()) {
+                decoderInputDropCount++;
+                return;
+            }
+
+            inputBuffer.clear();
+            inputBuffer.put(data);
+            int queueFlags = flags;
+            if (type == PACKET_CONFIG) {
+                queueFlags |= MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
+            }
+            videoDecoder.queueInputBuffer(inputIndex, 0, data.length, Math.max(0L, ptsUs), queueFlags);
+            drainStudioDecoderOutputs();
+        } catch (Exception e) {
+            decoderErrorCount++;
+            decoderFormatSummary = "decoder error: " + shorten(safeMessage(e), 42);
+        }
+    }
+
+    private synchronized void ensureStudioDecoder(int packetWidth, int packetHeight) throws IOException {
+        int width = packetWidth > 0 ? packetWidth : TARGET_SHORT_SIDE;
+        int height = packetHeight > 0 ? packetHeight : TARGET_SHORT_SIDE * 2;
+
+        if (videoDecoder != null && decoderWidth == width && decoderHeight == height) {
+            return;
+        }
+
+        releaseStudioDecoder();
+        MediaFormat format = MediaFormat.createVideoFormat(AVC_MIME_TYPE, width, height);
+        videoDecoder = MediaCodec.createDecoderByType(AVC_MIME_TYPE);
+        videoDecoder.configure(format, decoderOutputSurface, null, 0);
+        videoDecoder.start();
+        decoderWidth = width;
+        decoderHeight = height;
+        decoderFormatSummary = "video/avc " + width + "x" + height;
+    }
+
+    private synchronized void drainStudioDecoderOutputs() {
+        if (videoDecoder == null) {
+            return;
+        }
+
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        while (true) {
+            int outputIndex = videoDecoder.dequeueOutputBuffer(info, 0);
+            if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                return;
+            }
+            if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat format = videoDecoder.getOutputFormat();
+                decoderFormatChangeCount++;
+                decoderFormatSummary = format.toString();
+                continue;
+            }
+            if (outputIndex < 0) {
+                return;
+            }
+
+            videoDecoder.releaseOutputBuffer(outputIndex, true);
+            if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                decodedFrameCount++;
+                lastDecodedFrameAtMs = System.currentTimeMillis();
+            }
+        }
+    }
+
+    private synchronized void releaseStudioDecoder() {
+        if (videoDecoder != null) {
+            try {
+                videoDecoder.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                videoDecoder.release();
+            } catch (Exception ignored) {
+            }
+            videoDecoder = null;
+        }
+        decoderWidth = 0;
+        decoderHeight = 0;
     }
 
     private void stopStudioClient(String message) {
         studioClientRunning = false;
         closeStudioSocketQuietly();
+        releaseStudioDecoder();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (statusView != null && "Studio".equalsIgnoreCase(mode)) {
             setStatus(message, false);
@@ -672,13 +829,15 @@ public class ModeActivity extends Activity {
         if ("Studio".equalsIgnoreCase(mode)) {
             long uptimeSec = studioConnectedAtMs > 0L && studioClientRunning ? Math.max(0L, (System.currentTimeMillis() - studioConnectedAtMs) / 1000L) : 0L;
             String packetAge = studioLastPacketAtMs > 0L ? Math.max(0L, (System.currentTimeMillis() - studioLastPacketAtMs) / 1000L) + "s ago" : "n/a";
+            String frameAge = lastDecodedFrameAtMs > 0L ? Math.max(0L, (System.currentTimeMillis() - lastDecodedFrameAtMs) / 1000L) + "s ago" : "n/a";
             metricsView.setText(
-                    "Packet receive metrics\n" +
-                            "Client: " + (studioClientRunning ? "connected" : "inactive") + "\n" +
+                    "Decode preview metrics\n" +
+                            "Client: " + (studioClientRunning ? "connected" : "inactive") + " | Surface: " + (decoderOutputSurface != null && decoderOutputSurface.isValid() ? "ready" : "not ready") + "\n" +
                             "Packets received: " + studioPacketsReceived + " | Bytes received: " + readableBytes(studioBytesReceived) + "\n" +
                             "Config: " + studioConfigReceived + " | Key frames: " + studioKeyFramesReceived + " | Delta: " + studioDeltaFramesReceived + "\n" +
-                            "Last packet age: " + packetAge + " | Uptime: " + uptimeSec + "s\n" +
-                            "Last: " + shorten(studioLastPacketSummary, 76)
+                            "Decoded frames: " + decodedFrameCount + " | Drops: " + decoderInputDropCount + " | Errors: " + decoderErrorCount + "\n" +
+                            "Last packet: " + packetAge + " | Last frame: " + frameAge + " | Uptime: " + uptimeSec + "s\n" +
+                            "Decoder: " + shorten(decoderFormatSummary, 76)
             );
             return;
         }
@@ -693,7 +852,7 @@ public class ModeActivity extends Activity {
                         "Encoded: " + readableBytes(encodedBytes) + " | Outputs: " + encodedOutputCount + " | Key: " + keyFrameCount + " | Config: " + codecConfigCount + "\n" +
                         "Sent: " + packetsSent + " packets | " + readableBytes(bytesSent) + " | Errors: " + sendErrorCount + "\n" +
                         "Format: " + outputFormatSummary + " | Uptime: " + uptimeSec + "s\n" +
-                        "Network: LAN packet dry run | File: off | Audio: off"
+                        "Network: LAN packet preview | File: off | Sound: off"
         );
     }
 
@@ -855,7 +1014,7 @@ public class ModeActivity extends Activity {
 
     private void addBadge(LinearLayout root) {
         TextView badge = new TextView(this);
-        badge.setText("Phase 8");
+        badge.setText("Phase 9");
         badge.setTextSize(14);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
         badge.setTextColor(Color.rgb(124, 58, 237));
@@ -952,6 +1111,12 @@ public class ModeActivity extends Activity {
 
     private LinearLayout.LayoutParams fullWidthWrapWithBottom(int bottomMargin) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, 0, 0, bottomMargin);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams fullWidthHeightWithBottom(int height, int bottomMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, height);
         params.setMargins(0, 0, 0, bottomMargin);
         return params;
     }

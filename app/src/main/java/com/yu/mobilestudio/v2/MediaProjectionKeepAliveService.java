@@ -107,7 +107,7 @@ public class MediaProjectionKeepAliveService extends Service {
                 : new Notification.Builder(this);
 
         builder.setContentTitle("MobileStudioV2 Sender")
-                .setContentText("H.264 LAN dry-run capture session active")
+                .setContentText("H.264 LAN preview capture session active")
                 .setSmallIcon(android.R.drawable.presence_video_online)
                 .setContentIntent(pendingIntent)
                 .setOngoing(true);
@@ -115,3 +115,4 @@ public class MediaProjectionKeepAliveService extends Service {
         return builder.build();
     }
 }
+

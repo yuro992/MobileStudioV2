@@ -25,23 +25,28 @@ Status: PASS
 Status: PASS
 
 ## Phase 8 — H.264 LAN Packet Sender Dry Run
-Goal:
-
-Send encoded H.264 packet chunks from Sender to Studio over LAN and count packets/bytes on Studio. Studio does not decode video yet.
-
-Pass criteria:
-
-- Sender shows local IP and port.
-- Sender opens TCP packet server.
-- Sender encodes screen with MediaCodec H.264.
-- Sender sends config/key/delta packets to Studio.
-- Studio connects to Sender.
-- Studio receives packet chunks and shows packet/byte metrics.
-- No decode preview, RTMP, audio, file output, or browser source.
+Status: PASS
 
 ## Phase 9 — Studio H.264 Decode Preview
 Goal:
 
-Decode received H.264 packets on Studio and render them to a preview Surface.
+Receive H.264 packets on Studio, decode them with MediaCodec, and render them to a preview SurfaceView.
 
-Do not start until Phase 8 is confirmed PASS.
+Pass criteria:
+
+- Sender opens TCP packet server on port 56791.
+- Sender encodes screen and sends config/key/delta packets.
+- Studio connects to Sender.
+- Studio receives packets.
+- Studio creates H.264 decoder.
+- Studio renders decoded frames to preview surface.
+- Studio shows decoded frame metrics.
+- No platform output, sound capture, file output, or overlay source.
+
+## Phase 10 — Studio Preview Stability + Reconnect
+Goal:
+
+Improve decoder resilience, reconnect behavior, and preview scaling before adding live composition work.
+
+Do not start until Phase 9 is confirmed PASS.
+

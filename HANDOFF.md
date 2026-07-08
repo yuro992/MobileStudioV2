@@ -2,33 +2,35 @@
 
 ## Current phase
 
-Phase 8 — H.264 LAN Packet Sender Dry Run
+Phase 9 — Studio H.264 Decode Preview
 
 ## What exists
 
 - Sender screen-capture permission flow
 - Sender MediaProjection foreground keep-alive service
 - Sender MediaCodec H.264 encoder
-- Sender TCP packet server on port 56790
-- Sender framed H.264 packet writer
+- Sender TCP packet server on port 56791
+- Sender framed H.264 packet writer with dimensions in packet header
 - Studio TCP packet receiver
-- Studio packet metrics for bytes, packets, config buffers, key frames, delta frames
+- Studio MediaCodec H.264 decoder
+- Studio SurfaceView preview renderer
+- Studio metrics for packets, bytes, config buffers, key frames, delta frames, decoded frames, drops, and errors
 
 ## Important constraints
 
-Do not add these in Phase 8:
+Do not add these in Phase 9:
 
-- RTMP
+- Streaming-platform output
 - WebRTC
-- AudioPlaybackCapture
-- H.264 decode preview
-- Browser Source
+- Sound capture path
+- Browser overlay source
 - File recording
 - API keys
 - `.env`
 
 ## Next phase
 
-Phase 9 should add Studio H.264 decode preview only.
+Phase 10 should stabilize Studio preview and reconnect behavior only.
 
-It should not add RTMP, audio, browser source, or streaming platform output yet.
+It should not add live platform output, sound capture, browser overlay source, or full scene composition yet.
+

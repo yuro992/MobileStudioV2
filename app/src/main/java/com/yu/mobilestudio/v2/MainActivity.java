@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, fullWidthWrap());
 
         TextView phase = new TextView(this);
-        phase.setText("Phase 8: H.264 LAN packet dry run");
+        phase.setText("Phase 9: Studio H.264 decode preview");
         phase.setTextSize(14);
         phase.setTextColor(Color.rgb(124, 58, 237));
         phase.setTypeface(Typeface.DEFAULT_BOLD);
@@ -54,20 +54,20 @@ public class MainActivity extends Activity {
 
         View senderCard = makeModeCard(
                 "Sender Mode",
-                "Game phone: encode H.264 and send dry-run packets over LAN",
+                "Game phone: send H.264 packets for Studio preview",
                 "Sender"
         );
         root.addView(senderCard, fullWidthHeightWithBottom(dp(118), dp(14)));
 
         View studioCard = makeModeCard(
                 "Studio Mode",
-                "Stream phone: receive H.264 packet metrics over Wi-Fi/LAN",
+                "Stream phone: decode and preview H.264 over Wi-Fi/LAN",
                 "Studio"
         );
         root.addView(studioCard, fullWidthHeightWithBottom(dp(118), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Phase 8 sends encoded packet data only. Later-stage live features are disabled.");
+        footer.setText("Phase 9 decodes received H.264 packets into a Studio preview surface.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);
@@ -147,3 +147,4 @@ public class MainActivity extends Activity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
+
