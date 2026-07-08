@@ -2,46 +2,31 @@
 
 MobileStudioV2 is a two-phone mobile live studio experiment.
 
-## Current status
+## Phase 8 status
 
-Phase 7 adds two-phone LAN pairing test behavior.
+Phase 8 is H.264 LAN packet sender dry run.
 
 Current features:
 
-- Android app package: `com.yu.mobilestudio.v2`
-- App name: `MobileStudioV2`
-- Sender Mode LAN test server
-- Studio Mode LAN client
-- TCP heartbeat messages between phones on the same Wi-Fi/LAN
-- Connection metrics and heartbeat counters
-- GitHub Actions workflow for debug APK build
+- Sender Mode requests Android screen-capture permission.
+- Sender Mode encodes the screen with MediaCodec H.264.
+- Sender Mode opens a TCP LAN server on port `56790`.
+- Sender sends framed H.264 packet chunks to a connected Studio client.
+- Studio Mode connects to Sender by IP and port.
+- Studio Mode receives packet data and reports byte/packet/key-frame/config metrics.
 
-## Phase 7 scope
+## Not included yet
 
-Phase 7 tests only the connection path between the game phone and the stream phone.
+Phase 8 intentionally does not include:
 
-Included:
-
-- Sender local IP display
-- Sender port display
-- Start/stop LAN test server
-- Studio IP input
-- Studio port input
-- Connect/disconnect button
-- Heartbeat counter
-- Basic latency estimate
-
-Not included yet:
-
-- Video packet transport
-- Decoder
-- Audio
+- Studio H.264 decode preview
+- RTMP output
+- Audio capture
 - Browser Source
-- Live output
-- Recording
+- File recording
 
 ## Verify
 
 ```bash
-bash scripts/verify_phase7.sh
+bash scripts/verify_phase8.sh
 ```

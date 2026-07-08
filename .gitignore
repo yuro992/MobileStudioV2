@@ -11,3 +11,4 @@ local.properties
 *.jks
 .phase*_backups/
 .phase7_backups/
+.phase8_backups/

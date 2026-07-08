@@ -1,73 +1,133 @@
 package com.yu.mobilestudio.v2;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.InputType;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.view.Surface;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.nio.ByteBuffer;
 import java.util.Enumeration;
-import java.util.List;
+import java.util.Locale;
 
 public class ModeActivity extends Activity {
 
-    private static final int DEFAULT_PORT = 56789;
-    private static final String HEARTBEAT_PREFIX = "MOBILESTUDIOV2_HEARTBEAT";
+    private static final int REQUEST_CAPTURE_PERMISSION = 2602;
+    private static final int DEFAULT_PORT = 56790;
+    private static final int PACKET_MAGIC = 0x4D535638; // MSV8
+    private static final int PACKET_CONFIG = 1;
+    private static final int PACKET_KEY_FRAME = 2;
+    private static final int PACKET_DELTA_FRAME = 3;
+    private static final int TARGET_SHORT_SIDE = 720;
+    private static final int TARGET_FPS = 30;
+    private static final int TARGET_BITRATE = 4_000_000;
+    private static final int I_FRAME_INTERVAL_SECONDS = 2;
+    private static final String AVC_MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
 
-    private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private final List<Socket> senderClientSockets = Collections.synchronizedList(new ArrayList<>());
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private String mode;
     private TextView statusView;
     private TextView metricsView;
-    private TextView primaryButton;
-    private TextView secondaryButton;
+    private TextView requestButton;
+    private TextView startButton;
+    private TextView stopButton;
     private EditText ipInput;
     private EditText portInput;
 
-    private volatile boolean senderServerRunning = false;
-    private volatile boolean studioClientRunning = false;
-    private ServerSocket serverSocket;
+    private Intent projectionPermissionData;
+    private int projectionPermissionResultCode = Activity.RESULT_CANCELED;
+    private MediaProjection mediaProjection;
+    private VirtualDisplay virtualDisplay;
+    private MediaCodec videoEncoder;
+    private Surface encoderInputSurface;
+    private Thread encoderDrainThread;
+    private Thread senderAcceptThread;
+    private Thread studioReadThread;
+    private ServerSocket senderServerSocket;
+    private Socket senderClientSocket;
+    private DataOutputStream senderClientOut;
     private Socket studioSocket;
-    private Thread senderServerThread;
-    private Thread studioClientThread;
+    private DataInputStream studioInput;
 
-    private int senderAcceptedConnections = 0;
-    private int senderHeartbeatCounter = 0;
-    private int studioHeartbeatCounter = 0;
-    private long senderStartedAtMs = 0L;
+    private volatile boolean senderActive = false;
+    private volatile boolean drainRunning = false;
+    private volatile boolean studioClientRunning = false;
+    private boolean releasingSession = false;
+
+    private int sourceWidth = 0;
+    private int sourceHeight = 0;
+    private int sourceDensity = 0;
+    private int encoderWidth = 0;
+    private int encoderHeight = 0;
+    private long startedAtMs = 0L;
+    private long encodedBytes = 0L;
+    private long encodedOutputCount = 0L;
+    private long keyFrameCount = 0L;
+    private long codecConfigCount = 0L;
+    private long packetsSent = 0L;
+    private long bytesSent = 0L;
+    private long sendErrorCount = 0L;
+    private long packetSequence = 0L;
+    private int acceptedClients = 0;
+    private String outputFormatSummary = "waiting";
+    private byte[] latestConfigPacket = null;
+
     private long studioConnectedAtMs = 0L;
-    private long lastHeartbeatAtMs = 0L;
-    private long lastLatencyMs = -1L;
-    private String lastMessage = "none";
+    private long studioPacketsReceived = 0L;
+    private long studioBytesReceived = 0L;
+    private long studioConfigReceived = 0L;
+    private long studioKeyFramesReceived = 0L;
+    private long studioDeltaFramesReceived = 0L;
+    private long studioLastPacketAtMs = 0L;
+    private String studioLastPacketSummary = "none";
 
     private final Runnable metricsTicker = new Runnable() {
         @Override
         public void run() {
-            refreshMetrics();
-            uiHandler.postDelayed(this, 1000L);
+            updateMetrics();
+            mainHandler.postDelayed(this, 1000L);
+        }
+    };
+
+    private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
+        @Override
+        public void onStop() {
+            mainHandler.post(() -> releaseSenderSession(false, "H.264 LAN dry run stopped by Android. Request permission again."));
         }
     };
 
@@ -81,56 +141,91 @@ public class ModeActivity extends Activity {
         }
 
         setTitle(mode + " Mode");
-        uiHandler.post(metricsTicker);
+        mainHandler.post(metricsTicker);
 
         if ("Studio".equalsIgnoreCase(mode)) {
-            buildStudioUi();
+            buildStudioScreen();
         } else {
-            buildSenderUi();
+            buildSenderScreen();
         }
     }
 
-    private void buildSenderUi() {
-        LinearLayout content = baseContent();
-        addBadge(content);
-        addTitle(content, "Sender Mode Ready");
-        addDescription(content, "Start a LAN test server on the game phone. The Studio phone will connect and receive heartbeat messages only.");
+    @Override
+    protected void onDestroy() {
+        mainHandler.removeCallbacks(metricsTicker);
+        releaseSenderSession(true, null);
+        stopStudioClient("Disconnected");
+        super.onDestroy();
+    }
 
-        TextView networkBox = infoBox(
-                "Sender LAN endpoint\n" +
-                        "IP: " + getLocalIpv4Address() + "\n" +
-                        "Port: " + DEFAULT_PORT + "\n" +
-                        "Protocol: TCP heartbeat test"
-        );
-        content.addView(networkBox, fullWidthWrapWithBottom(dp(18)));
+    @Override
+    public void onBackPressed() {
+        releaseSenderSession(true, null);
+        stopStudioClient("Disconnected");
+        super.onBackPressed();
+    }
 
-        statusView = statusBox("Status: LAN server not started", false);
-        content.addView(statusView, fullWidthWrapWithBottom(dp(14)));
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
 
-        metricsView = metricsBox("LAN metrics\nServer: inactive\nClients: 0\nHeartbeats sent: 0\nLocal IP: " + getLocalIpv4Address());
-        content.addView(metricsView, fullWidthWrapWithBottom(dp(18)));
+        if (requestCode != REQUEST_CAPTURE_PERMISSION) {
+            return;
+        }
 
-        primaryButton = actionButton("Start LAN Test Server", Color.rgb(22, 101, 52));
-        primaryButton.setOnClickListener(v -> startSenderServer());
-        content.addView(primaryButton, fullWidthWrapWithBottom(dp(12)));
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            projectionPermissionResultCode = resultCode;
+            projectionPermissionData = data;
+            setStatus("Permission granted. Ready to start H.264 LAN dry run", true);
+        } else {
+            projectionPermissionResultCode = Activity.RESULT_CANCELED;
+            projectionPermissionData = null;
+            setStatus("Screen capture permission denied", false);
+        }
 
-        secondaryButton = actionButton("Stop LAN Test Server", Color.rgb(185, 28, 28));
-        secondaryButton.setOnClickListener(v -> stopSenderServer("LAN server stopped"));
-        content.addView(secondaryButton, fullWidthWrapWithBottom(dp(18)));
+        updateMetrics();
+        updateButtons();
+    }
+
+    private void buildSenderScreen() {
+        LinearLayout root = baseContent();
+        addBadge(root);
+        addTitle(root, "Sender Mode Ready");
+        addDescription(root, "Encode screen buffers and send H.264 packet chunks to Studio over LAN. This phase does not decode, save, stream to RTMP, or capture audio.");
+
+        root.addView(infoBox("Sender H.264 LAN endpoint\nIP: " + getLocalIpv4Address() + "\nPort: " + DEFAULT_PORT + "\nProtocol: TCP framed packet dry run"), fullWidthWrapWithBottom(dp(14)));
+
+        statusView = statusBox("Status: Not requested", false);
+        root.addView(statusView, fullWidthWrapWithBottom(dp(14)));
+
+        metricsView = metricsBox("H.264 LAN metrics\nServer: inactive\nClient: none\nPackets sent: 0 | Bytes sent: 0\nEncoded: inactive");
+        root.addView(metricsView, fullWidthWrapWithBottom(dp(16)));
+
+        requestButton = actionButton("Request Screen Capture Permission", Color.rgb(124, 58, 237));
+        requestButton.setOnClickListener(v -> requestCapturePermission());
+        root.addView(requestButton, fullWidthWrapWithBottom(dp(10)));
+
+        startButton = actionButton("Start H.264 LAN Dry Run", Color.rgb(22, 101, 52));
+        startButton.setOnClickListener(v -> startSenderLanDryRun());
+        root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
+
+        stopButton = actionButton("Stop H.264 LAN Dry Run", Color.rgb(185, 28, 28));
+        stopButton.setOnClickListener(v -> releaseSenderSession(false, "H.264 LAN dry run stopped. Request permission again."));
+        root.addView(stopButton, fullWidthWrapWithBottom(dp(18)));
 
         TextView backButton = actionButton("Back", Color.rgb(39, 39, 42));
         backButton.setOnClickListener(v -> finish());
-        content.addView(backButton, wrapCentered());
+        root.addView(backButton, wrapCentered());
 
-        updateSenderButtons();
-        setContentView(wrapInScroll(content));
+        updateButtons();
+        setContentView(wrapInScroll(root));
     }
 
-    private void buildStudioUi() {
-        LinearLayout content = baseContent();
-        addBadge(content);
-        addTitle(content, "Studio Mode Ready");
-        addDescription(content, "Connect to the Sender phone over the same Wi-Fi/LAN. This phase receives heartbeat messages only.");
+    private void buildStudioScreen() {
+        LinearLayout root = baseContent();
+        addBadge(root);
+        addTitle(root, "Studio Mode Ready");
+        addDescription(root, "Connect to Sender over Wi-Fi/LAN and receive H.264 packets. This phase counts packet data only; it does not decode video yet.");
 
         ipInput = new EditText(this);
         ipInput.setText(getBestDefaultStudioIp());
@@ -140,7 +235,7 @@ public class ModeActivity extends Activity {
         ipInput.setTextColor(Color.rgb(39, 39, 42));
         ipInput.setPadding(dp(18), dp(12), dp(18), dp(12));
         ipInput.setBackground(makeRoundedBackground(Color.WHITE, dp(18), Color.rgb(221, 214, 254)));
-        content.addView(ipInput, fullWidthWrapWithBottom(dp(10)));
+        root.addView(ipInput, fullWidthWrapWithBottom(dp(10)));
 
         portInput = new EditText(this);
         portInput.setText(String.valueOf(DEFAULT_PORT));
@@ -151,113 +246,315 @@ public class ModeActivity extends Activity {
         portInput.setTextColor(Color.rgb(39, 39, 42));
         portInput.setPadding(dp(18), dp(12), dp(18), dp(12));
         portInput.setBackground(makeRoundedBackground(Color.WHITE, dp(18), Color.rgb(221, 214, 254)));
-        content.addView(portInput, fullWidthWrapWithBottom(dp(16)));
+        root.addView(portInput, fullWidthWrapWithBottom(dp(16)));
 
         statusView = statusBox("Status: Not connected", false);
-        content.addView(statusView, fullWidthWrapWithBottom(dp(14)));
+        root.addView(statusView, fullWidthWrapWithBottom(dp(14)));
 
-        metricsView = metricsBox("Connection metrics\nClient: inactive\nHeartbeats received: 0\nLast latency: n/a\nLast message: none");
-        content.addView(metricsView, fullWidthWrapWithBottom(dp(18)));
+        metricsView = metricsBox("Packet receive metrics\nClient: inactive\nPackets received: 0 | Bytes received: 0\nConfig: 0 | Key frames: 0 | Delta: 0\nLast packet: none");
+        root.addView(metricsView, fullWidthWrapWithBottom(dp(16)));
 
-        primaryButton = actionButton("Connect to Sender", Color.rgb(22, 101, 52));
-        primaryButton.setOnClickListener(v -> startStudioClient());
-        content.addView(primaryButton, fullWidthWrapWithBottom(dp(12)));
+        startButton = actionButton("Connect to Sender", Color.rgb(22, 101, 52));
+        startButton.setOnClickListener(v -> startStudioClient());
+        root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
 
-        secondaryButton = actionButton("Disconnect", Color.rgb(185, 28, 28));
-        secondaryButton.setOnClickListener(v -> stopStudioClient("Disconnected"));
-        content.addView(secondaryButton, fullWidthWrapWithBottom(dp(18)));
+        stopButton = actionButton("Disconnect", Color.rgb(185, 28, 28));
+        stopButton.setOnClickListener(v -> stopStudioClient("Disconnected"));
+        root.addView(stopButton, fullWidthWrapWithBottom(dp(18)));
 
         TextView backButton = actionButton("Back", Color.rgb(39, 39, 42));
         backButton.setOnClickListener(v -> finish());
-        content.addView(backButton, wrapCentered());
+        root.addView(backButton, wrapCentered());
 
-        updateStudioButtons();
-        setContentView(wrapInScroll(content));
+        updateButtons();
+        setContentView(wrapInScroll(root));
     }
 
-    private void startSenderServer() {
-        if (senderServerRunning) {
+    private void requestCapturePermission() {
+        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        if (manager == null) {
+            setStatus("MediaProjectionManager unavailable", false);
+            return;
+        }
+        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE_PERMISSION);
+    }
+
+    private void startSenderLanDryRun() {
+        if (senderActive) {
+            return;
+        }
+        if (projectionPermissionData == null || projectionPermissionResultCode != Activity.RESULT_OK) {
+            setStatus("Request screen capture permission first", false);
             return;
         }
 
-        senderServerRunning = true;
-        senderAcceptedConnections = 0;
-        senderHeartbeatCounter = 0;
-        senderStartedAtMs = System.currentTimeMillis();
+        resetSenderCounters();
+        startKeepAliveService();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        updateStatus("Status: Starting LAN server...", true);
-        updateSenderButtons();
+        setStatus("Starting H.264 LAN dry run server and encoder...", true);
+        senderActive = true;
+        updateButtons();
 
-        senderServerThread = new Thread(() -> {
-            try {
-                serverSocket = new ServerSocket(DEFAULT_PORT);
-                runOnUiThread(() -> updateStatus("Status: LAN server active. Waiting for Studio connection", true));
-
-                while (senderServerRunning && !serverSocket.isClosed()) {
-                    Socket client = serverSocket.accept();
-                    senderClientSockets.add(client);
-                    senderAcceptedConnections++;
-                    runOnUiThread(() -> updateStatus("Status: Studio connected. Sending heartbeat", true));
-                    startSenderHeartbeatThread(client);
-                }
-            } catch (IOException e) {
-                if (senderServerRunning) {
-                    runOnUiThread(() -> updateStatus("Status: LAN server error: " + safeMessage(e), false));
-                }
-            } finally {
-                closeServerSocketQuietly();
-                closeSenderClientSocketsQuietly();
-                senderServerRunning = false;
-                runOnUiThread(() -> {
-                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    updateSenderButtons();
-                    refreshMetrics();
-                });
+        try {
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager == null) {
+                throw new IllegalStateException("MediaProjectionManager unavailable");
             }
-        }, "MobileStudioV2-SenderServer");
 
-        senderServerThread.start();
+            mediaProjection = manager.getMediaProjection(projectionPermissionResultCode, projectionPermissionData);
+            if (mediaProjection == null) {
+                throw new IllegalStateException("MediaProjection unavailable");
+            }
+            mediaProjection.registerCallback(projectionCallback, mainHandler);
+
+            prepareEncoder();
+            startSenderAcceptThread();
+            videoEncoder.start();
+            createVirtualDisplay();
+            startEncoderDrainThread();
+
+            setStatus("H.264 LAN dry run active. Waiting for Studio packet client", true);
+        } catch (Exception e) {
+            releaseSenderSession(false, "Failed to start H.264 LAN dry run: " + safeMessage(e));
+        }
     }
 
-    private void startSenderHeartbeatThread(Socket client) {
-        Thread heartbeatThread = new Thread(() -> {
-            try {
-                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()));
-                while (senderServerRunning && !client.isClosed()) {
-                    int heartbeatNumber = ++senderHeartbeatCounter;
-                    long now = System.currentTimeMillis();
-                    String message = HEARTBEAT_PREFIX + " " + heartbeatNumber + " " + now + "\n";
-                    writer.write(message);
-                    writer.flush();
-                    Thread.sleep(1000L);
-                }
-            } catch (Exception ignored) {
-                // Client disconnected or server stopped.
-            } finally {
+    private void resetSenderCounters() {
+        sourceWidth = 0;
+        sourceHeight = 0;
+        sourceDensity = 0;
+        encoderWidth = 0;
+        encoderHeight = 0;
+        startedAtMs = System.currentTimeMillis();
+        encodedBytes = 0L;
+        encodedOutputCount = 0L;
+        keyFrameCount = 0L;
+        codecConfigCount = 0L;
+        packetsSent = 0L;
+        bytesSent = 0L;
+        sendErrorCount = 0L;
+        packetSequence = 0L;
+        acceptedClients = 0;
+        outputFormatSummary = "waiting";
+        latestConfigPacket = null;
+    }
+
+    private void prepareEncoder() throws IOException {
+        DisplayMetrics metrics = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+        sourceWidth = metrics.widthPixels;
+        sourceHeight = metrics.heightPixels;
+        sourceDensity = metrics.densityDpi;
+
+        int[] size = calculateEncoderSize(sourceWidth, sourceHeight);
+        encoderWidth = size[0];
+        encoderHeight = size[1];
+
+        MediaFormat format = MediaFormat.createVideoFormat(AVC_MIME_TYPE, encoderWidth, encoderHeight);
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, TARGET_BITRATE);
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, TARGET_FPS);
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS);
+
+        videoEncoder = MediaCodec.createEncoderByType(AVC_MIME_TYPE);
+        videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        encoderInputSurface = videoEncoder.createInputSurface();
+    }
+
+    private void createVirtualDisplay() {
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+                "MobileStudioV2-Phase8-LanDryRun",
+                encoderWidth,
+                encoderHeight,
+                sourceDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                encoderInputSurface,
+                null,
+                mainHandler
+        );
+    }
+
+    private void startSenderAcceptThread() throws IOException {
+        senderServerSocket = new ServerSocket(DEFAULT_PORT);
+        senderAcceptThread = new Thread(() -> {
+            while (senderActive && senderServerSocket != null && !senderServerSocket.isClosed()) {
                 try {
-                    client.close();
-                } catch (IOException ignored) {
-                }
-                senderClientSockets.remove(client);
-                runOnUiThread(() -> {
-                    if (senderServerRunning && senderClientSockets.isEmpty()) {
-                        updateStatus("Status: LAN server active. Waiting for Studio connection", true);
+                    Socket client = senderServerSocket.accept();
+                    client.setTcpNoDelay(true);
+                    setSenderClient(client);
+                    acceptedClients++;
+                    mainHandler.post(() -> setStatus("Studio connected. Sending H.264 packets", true));
+                } catch (IOException e) {
+                    if (senderActive) {
+                        mainHandler.post(() -> setStatus("LAN accept error: " + safeMessage(e), false));
                     }
-                    refreshMetrics();
-                });
+                }
             }
-        }, "MobileStudioV2-SenderHeartbeat");
-        heartbeatThread.start();
+        }, "MobileStudioV2-Phase8-SenderAccept");
+        senderAcceptThread.start();
     }
 
-    private void stopSenderServer(String message) {
-        senderServerRunning = false;
-        closeServerSocketQuietly();
-        closeSenderClientSocketsQuietly();
+    private synchronized void setSenderClient(Socket client) {
+        closeSenderClientQuietly();
+        senderClientSocket = client;
+        try {
+            senderClientOut = new DataOutputStream(new BufferedOutputStream(client.getOutputStream()));
+            if (latestConfigPacket != null) {
+                senderClientOut.write(latestConfigPacket);
+                senderClientOut.flush();
+                packetsSent++;
+                bytesSent += latestConfigPacket.length;
+            }
+        } catch (IOException e) {
+            sendErrorCount++;
+            closeSenderClientQuietly();
+        }
+    }
+
+    private void startEncoderDrainThread() {
+        drainRunning = true;
+        encoderDrainThread = new Thread(() -> {
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
+            while (drainRunning && videoEncoder != null) {
+                try {
+                    int outputIndex = videoEncoder.dequeueOutputBuffer(bufferInfo, 10_000);
+                    if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        continue;
+                    }
+                    if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        MediaFormat newFormat = videoEncoder.getOutputFormat();
+                        outputFormatSummary = newFormat.getString(MediaFormat.KEY_MIME) + " " + encoderWidth + "x" + encoderHeight;
+                        continue;
+                    }
+                    if (outputIndex < 0) {
+                        continue;
+                    }
+
+                    ByteBuffer encodedBuffer = videoEncoder.getOutputBuffer(outputIndex);
+                    if (encodedBuffer != null && bufferInfo.size > 0) {
+                        byte[] data = new byte[bufferInfo.size];
+                        encodedBuffer.position(bufferInfo.offset);
+                        encodedBuffer.limit(bufferInfo.offset + bufferInfo.size);
+                        encodedBuffer.get(data);
+
+                        encodedBytes += data.length;
+                        encodedOutputCount++;
+
+                        int packetType = PACKET_DELTA_FRAME;
+                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            codecConfigCount++;
+                            packetType = PACKET_CONFIG;
+                        } else if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                            keyFrameCount++;
+                            packetType = PACKET_KEY_FRAME;
+                        }
+
+                        byte[] packet = buildVideoPacket(packetType, data, bufferInfo.flags, bufferInfo.presentationTimeUs);
+                        if (packetType == PACKET_CONFIG) {
+                            latestConfigPacket = packet;
+                        }
+                        sendPacketToStudio(packet);
+                    }
+
+                    videoEncoder.releaseOutputBuffer(outputIndex, false);
+                } catch (Exception e) {
+                    if (senderActive) {
+                        sendErrorCount++;
+                    }
+                }
+            }
+        }, "MobileStudioV2-Phase8-EncoderDrain");
+        encoderDrainThread.start();
+    }
+
+    private byte[] buildVideoPacket(int type, byte[] data, int flags, long ptsUs) throws IOException {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream(40 + data.length);
+        DataOutputStream out = new DataOutputStream(baos);
+        out.writeInt(PACKET_MAGIC);
+        out.writeInt(type);
+        out.writeLong(++packetSequence);
+        out.writeLong(System.currentTimeMillis());
+        out.writeLong(ptsUs);
+        out.writeInt(flags);
+        out.writeInt(data.length);
+        out.write(data);
+        out.flush();
+        return baos.toByteArray();
+    }
+
+    private synchronized void sendPacketToStudio(byte[] packet) {
+        if (senderClientOut == null) {
+            return;
+        }
+        try {
+            senderClientOut.write(packet);
+            senderClientOut.flush();
+            packetsSent++;
+            bytesSent += packet.length;
+        } catch (IOException e) {
+            sendErrorCount++;
+            closeSenderClientQuietly();
+            mainHandler.post(() -> setStatus("Studio disconnected. Encoder still active", true));
+        }
+    }
+
+    private void releaseSenderSession(boolean finishing, String message) {
+        if (releasingSession) {
+            return;
+        }
+        releasingSession = true;
+
+        senderActive = false;
+        drainRunning = false;
+        closeSenderServerQuietly();
+        closeSenderClientQuietly();
+
+        if (virtualDisplay != null) {
+            virtualDisplay.release();
+            virtualDisplay = null;
+        }
+        if (videoEncoder != null) {
+            try {
+                videoEncoder.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                videoEncoder.release();
+            } catch (Exception ignored) {
+            }
+            videoEncoder = null;
+        }
+        if (encoderInputSurface != null) {
+            try {
+                encoderInputSurface.release();
+            } catch (Exception ignored) {
+            }
+            encoderInputSurface = null;
+        }
+        if (mediaProjection != null) {
+            try {
+                mediaProjection.unregisterCallback(projectionCallback);
+            } catch (Exception ignored) {
+            }
+            try {
+                mediaProjection.stop();
+            } catch (Exception ignored) {
+            }
+            mediaProjection = null;
+        }
+
+        projectionPermissionData = null;
+        projectionPermissionResultCode = Activity.RESULT_CANCELED;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        updateStatus("Status: " + message, false);
-        updateSenderButtons();
-        refreshMetrics();
+        stopKeepAliveService();
+
+        if (!finishing && message != null) {
+            setStatus(message, false);
+        }
+        updateButtons();
+        updateMetrics();
+        releasingSession = false;
     }
 
     private void startStudioClient() {
@@ -267,272 +564,355 @@ public class ModeActivity extends Activity {
 
         String host = ipInput.getText().toString().trim();
         int port = parsePort(portInput.getText().toString().trim(), DEFAULT_PORT);
-
         if (host.isEmpty()) {
-            updateStatus("Status: Enter Sender IP first", false);
+            setStatus("Enter Sender IP first", false);
             return;
         }
 
         studioClientRunning = true;
-        studioHeartbeatCounter = 0;
-        lastLatencyMs = -1L;
-        lastMessage = "none";
-        lastHeartbeatAtMs = 0L;
         studioConnectedAtMs = 0L;
+        studioPacketsReceived = 0L;
+        studioBytesReceived = 0L;
+        studioConfigReceived = 0L;
+        studioKeyFramesReceived = 0L;
+        studioDeltaFramesReceived = 0L;
+        studioLastPacketAtMs = 0L;
+        studioLastPacketSummary = "none";
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        updateStatus("Status: Connecting to " + host + ":" + port + "...", true);
-        updateStudioButtons();
+        setStatus("Connecting to " + host + ":" + port + "...", true);
+        updateButtons();
 
-        studioClientThread = new Thread(() -> {
+        studioReadThread = new Thread(() -> {
             try {
                 Socket socket = new Socket();
                 studioSocket = socket;
+                socket.setTcpNoDelay(true);
                 socket.connect(new InetSocketAddress(host, port), 3500);
+                studioInput = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
                 studioConnectedAtMs = System.currentTimeMillis();
-                runOnUiThread(() -> updateStatus("Status: Connected to Sender. Waiting for heartbeat", true));
+                mainHandler.post(() -> setStatus("Connected. Waiting for H.264 packets", true));
 
-                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                String line;
-                while (studioClientRunning && (line = reader.readLine()) != null) {
-                    handleStudioHeartbeat(line);
-                }
-
-                if (studioClientRunning) {
-                    runOnUiThread(() -> updateStatus("Status: Connection lost", false));
+                while (studioClientRunning) {
+                    readOneVideoPacket(studioInput);
                 }
             } catch (IOException e) {
                 if (studioClientRunning) {
-                    runOnUiThread(() -> updateStatus("Status: Connection error: " + safeMessage(e), false));
+                    mainHandler.post(() -> setStatus("Connection error/lost: " + safeMessage(e), false));
                 }
             } finally {
                 closeStudioSocketQuietly();
                 studioClientRunning = false;
-                runOnUiThread(() -> {
+                mainHandler.post(() -> {
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    updateStudioButtons();
-                    refreshMetrics();
+                    updateButtons();
+                    updateMetrics();
                 });
             }
-        }, "MobileStudioV2-StudioClient");
-
-        studioClientThread.start();
+        }, "MobileStudioV2-Phase8-StudioRead");
+        studioReadThread.start();
     }
 
-    private void handleStudioHeartbeat(String line) {
-        long now = System.currentTimeMillis();
-        lastHeartbeatAtMs = now;
-        lastMessage = line;
-        studioHeartbeatCounter++;
-
-        String[] parts = line.split(" ");
-        if (parts.length >= 3 && HEARTBEAT_PREFIX.equals(parts[0])) {
-            try {
-                long serverTimeMs = Long.parseLong(parts[2]);
-                long latency = now - serverTimeMs;
-                if (latency >= 0 && latency < 60000) {
-                    lastLatencyMs = latency;
-                }
-            } catch (NumberFormatException ignored) {
-                lastLatencyMs = -1L;
-            }
+    private void readOneVideoPacket(DataInputStream input) throws IOException {
+        int magic = input.readInt();
+        if (magic != PACKET_MAGIC) {
+            throw new IOException("Bad packet magic");
         }
+        int type = input.readInt();
+        long sequence = input.readLong();
+        long sentAtMs = input.readLong();
+        long ptsUs = input.readLong();
+        int flags = input.readInt();
+        int size = input.readInt();
+        if (size < 0 || size > 2_000_000) {
+            throw new IOException("Bad packet size: " + size);
+        }
+        byte[] data = new byte[size];
+        input.readFully(data);
 
-        runOnUiThread(() -> updateStatus("Status: Connected. Heartbeat received", true));
+        studioPacketsReceived++;
+        studioBytesReceived += size;
+        studioLastPacketAtMs = System.currentTimeMillis();
+
+        String label;
+        if (type == PACKET_CONFIG) {
+            studioConfigReceived++;
+            label = "config";
+        } else if (type == PACKET_KEY_FRAME) {
+            studioKeyFramesReceived++;
+            label = "key";
+        } else {
+            studioDeltaFramesReceived++;
+            label = "delta";
+        }
+        studioLastPacketSummary = label + " seq=" + sequence + " size=" + readableBytes(size) + " latency=" + Math.max(0L, studioLastPacketAtMs - sentAtMs) + "ms pts=" + ptsUs + " flags=" + flags;
+        mainHandler.post(() -> setStatus("Connected. H.264 packets received", true));
     }
 
     private void stopStudioClient(String message) {
         studioClientRunning = false;
         closeStudioSocketQuietly();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        updateStatus("Status: " + message, false);
-        updateStudioButtons();
-        refreshMetrics();
+        if (statusView != null && "Studio".equalsIgnoreCase(mode)) {
+            setStatus(message, false);
+        }
+        updateButtons();
+        updateMetrics();
     }
 
-    private void refreshMetrics() {
+    private void updateMetrics() {
         if (metricsView == null) {
             return;
         }
 
         if ("Studio".equalsIgnoreCase(mode)) {
-            long uptimeSec = studioConnectedAtMs > 0L && studioClientRunning
-                    ? Math.max(0L, (System.currentTimeMillis() - studioConnectedAtMs) / 1000L)
-                    : 0L;
-            String latency = lastLatencyMs >= 0L ? lastLatencyMs + " ms" : "n/a";
-            String since = lastHeartbeatAtMs > 0L
-                    ? Math.max(0L, (System.currentTimeMillis() - lastHeartbeatAtMs) / 1000L) + "s ago"
-                    : "n/a";
+            long uptimeSec = studioConnectedAtMs > 0L && studioClientRunning ? Math.max(0L, (System.currentTimeMillis() - studioConnectedAtMs) / 1000L) : 0L;
+            String packetAge = studioLastPacketAtMs > 0L ? Math.max(0L, (System.currentTimeMillis() - studioLastPacketAtMs) / 1000L) + "s ago" : "n/a";
             metricsView.setText(
-                    "Connection metrics\n" +
+                    "Packet receive metrics\n" +
                             "Client: " + (studioClientRunning ? "connected" : "inactive") + "\n" +
-                            "Heartbeats received: " + studioHeartbeatCounter + "\n" +
-                            "Last latency: " + latency + " | Last heartbeat: " + since + "\n" +
-                            "Uptime: " + uptimeSec + "s\n" +
-                            "Last message: " + shorten(lastMessage, 52)
+                            "Packets received: " + studioPacketsReceived + " | Bytes received: " + readableBytes(studioBytesReceived) + "\n" +
+                            "Config: " + studioConfigReceived + " | Key frames: " + studioKeyFramesReceived + " | Delta: " + studioDeltaFramesReceived + "\n" +
+                            "Last packet age: " + packetAge + " | Uptime: " + uptimeSec + "s\n" +
+                            "Last: " + shorten(studioLastPacketSummary, 76)
             );
-        } else {
-            long uptimeSec = senderStartedAtMs > 0L && senderServerRunning
-                    ? Math.max(0L, (System.currentTimeMillis() - senderStartedAtMs) / 1000L)
-                    : 0L;
-            metricsView.setText(
-                    "LAN metrics\n" +
-                            "Server: " + (senderServerRunning ? "active" : "inactive") + "\n" +
-                            "Local IP: " + getLocalIpv4Address() + " | Port: " + DEFAULT_PORT + "\n" +
-                            "Connected clients: " + senderClientSockets.size() + " | Accepted: " + senderAcceptedConnections + "\n" +
-                            "Heartbeats sent: " + senderHeartbeatCounter + "\n" +
-                            "Uptime: " + uptimeSec + "s"
-            );
-        }
-    }
-
-    private void updateSenderButtons() {
-        setButtonEnabled(primaryButton, !senderServerRunning);
-        setButtonEnabled(secondaryButton, senderServerRunning);
-    }
-
-    private void updateStudioButtons() {
-        setButtonEnabled(primaryButton, !studioClientRunning);
-        setButtonEnabled(secondaryButton, studioClientRunning);
-        if (ipInput != null) {
-            ipInput.setEnabled(!studioClientRunning);
-        }
-        if (portInput != null) {
-            portInput.setEnabled(!studioClientRunning);
-        }
-    }
-
-    private void updateStatus(String text, boolean good) {
-        if (statusView == null) {
             return;
         }
-        statusView.setText(text);
-        statusView.setTextColor(good ? Color.rgb(21, 128, 61) : Color.rgb(68, 64, 60));
-        refreshMetrics();
+
+        long uptimeSec = startedAtMs > 0L && senderActive ? Math.max(0L, (System.currentTimeMillis() - startedAtMs) / 1000L) : 0L;
+        metricsView.setText(
+                "H.264 LAN metrics\n" +
+                        "Endpoint: " + getLocalIpv4Address() + ":" + DEFAULT_PORT + "\n" +
+                        "Server: " + (senderServerSocket != null && !senderServerSocket.isClosed() ? "active" : "inactive") + " | Client: " + (senderClientOut != null ? "connected" : "none") + " | Accepted: " + acceptedClients + "\n" +
+                        "Source: " + (sourceWidth > 0 ? sourceWidth + "x" + sourceHeight + " @ " + sourceDensity + " dpi" : "not active") + "\n" +
+                        "Encoder: H.264 " + (encoderWidth > 0 ? encoderWidth + "x" + encoderHeight : "target pending") + " @ " + TARGET_FPS + " fps, " + String.format(Locale.US, "%.1f Mbps", TARGET_BITRATE / 1_000_000f) + "\n" +
+                        "Encoded: " + readableBytes(encodedBytes) + " | Outputs: " + encodedOutputCount + " | Key: " + keyFrameCount + " | Config: " + codecConfigCount + "\n" +
+                        "Sent: " + packetsSent + " packets | " + readableBytes(bytesSent) + " | Errors: " + sendErrorCount + "\n" +
+                        "Format: " + outputFormatSummary + " | Uptime: " + uptimeSec + "s\n" +
+                        "Network: LAN packet dry run | File: off | Audio: off"
+        );
     }
 
-    private void closeServerSocketQuietly() {
+    private void updateButtons() {
+        if ("Studio".equalsIgnoreCase(mode)) {
+            setButtonEnabled(startButton, !studioClientRunning);
+            setButtonEnabled(stopButton, studioClientRunning);
+            if (ipInput != null) ipInput.setEnabled(!studioClientRunning);
+            if (portInput != null) portInput.setEnabled(!studioClientRunning);
+            return;
+        }
+        setButtonEnabled(requestButton, !senderActive);
+        setButtonEnabled(startButton, !senderActive && projectionPermissionData != null);
+        setButtonEnabled(stopButton, senderActive);
+    }
+
+    private void setStatus(String message, boolean good) {
+        if (statusView != null) {
+            statusView.setText("Status: " + message);
+            statusView.setTextColor(good ? Color.rgb(21, 128, 61) : Color.rgb(68, 64, 60));
+        }
+        updateMetrics();
+    }
+
+    private int[] calculateEncoderSize(int width, int height) {
+        int shortSide = Math.min(width, height);
+        float scale = TARGET_SHORT_SIDE / (float) shortSide;
+        int scaledWidth = makeEven(Math.round(width * scale));
+        int scaledHeight = makeEven(Math.round(height * scale));
+        return new int[]{scaledWidth, scaledHeight};
+    }
+
+    private int makeEven(int value) {
+        int even = value % 2 == 0 ? value : value + 1;
+        return Math.max(2, even);
+    }
+
+    private void startKeepAliveService() {
+        Intent serviceIntent = new Intent(this, MediaProjectionKeepAliveService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
+    private void stopKeepAliveService() {
+        Intent stopIntent = new Intent(this, MediaProjectionKeepAliveService.class);
+        stopIntent.setAction(MediaProjectionKeepAliveService.ACTION_STOP);
         try {
-            if (serverSocket != null) {
-                serverSocket.close();
-            }
+            startService(stopIntent);
+        } catch (Exception ignored) {
+            stopService(new Intent(this, MediaProjectionKeepAliveService.class));
+        }
+    }
+
+    private synchronized void closeSenderClientQuietly() {
+        try {
+            if (senderClientOut != null) senderClientOut.close();
         } catch (IOException ignored) {
         }
-        serverSocket = null;
+        senderClientOut = null;
+        try {
+            if (senderClientSocket != null) senderClientSocket.close();
+        } catch (IOException ignored) {
+        }
+        senderClientSocket = null;
     }
 
-    private void closeSenderClientSocketsQuietly() {
-        synchronized (senderClientSockets) {
-            for (Socket socket : new ArrayList<>(senderClientSockets)) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {
-                }
-            }
-            senderClientSockets.clear();
+    private void closeSenderServerQuietly() {
+        try {
+            if (senderServerSocket != null) senderServerSocket.close();
+        } catch (IOException ignored) {
         }
+        senderServerSocket = null;
     }
 
     private void closeStudioSocketQuietly() {
         try {
-            if (studioSocket != null) {
-                studioSocket.close();
-            }
+            if (studioInput != null) studioInput.close();
+        } catch (IOException ignored) {
+        }
+        studioInput = null;
+        try {
+            if (studioSocket != null) studioSocket.close();
         } catch (IOException ignored) {
         }
         studioSocket = null;
     }
 
-    @Override
-    protected void onDestroy() {
-        uiHandler.removeCallbacks(metricsTicker);
-        stopSenderServer("LAN server stopped");
-        stopStudioClient("Disconnected");
-        super.onDestroy();
+    private int parsePort(String value, int fallback) {
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed > 0 && parsed <= 65535) return parsed;
+        } catch (NumberFormatException ignored) {
+        }
+        return fallback;
+    }
+
+    private String getBestDefaultStudioIp() {
+        String local = getLocalIpv4Address();
+        if (local.startsWith("192.168.")) {
+            int lastDot = local.lastIndexOf('.');
+            if (lastDot > 0) return local.substring(0, lastDot + 1) + "51";
+        }
+        return "192.168.1.51";
+    }
+
+    private String getLocalIpv4Address() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) continue;
+                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "0.0.0.0";
+    }
+
+    private String safeMessage(Throwable throwable) {
+        String message = throwable == null ? null : throwable.getMessage();
+        return message == null || message.trim().isEmpty() ? throwable.getClass().getSimpleName() : message;
+    }
+
+    private String readableBytes(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return String.format(Locale.US, "%.1f KB", bytes / 1024f);
+        return String.format(Locale.US, "%.2f MB", bytes / (1024f * 1024f));
+    }
+
+    private String shorten(String value, int max) {
+        if (value == null) return "none";
+        if (value.length() <= max) return value;
+        return value.substring(0, Math.max(0, max - 3)) + "...";
     }
 
     private LinearLayout baseContent() {
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setGravity(Gravity.CENTER_HORIZONTAL);
-        content.setPadding(dp(24), dp(28), dp(24), dp(28));
-        content.setBackgroundColor(Color.rgb(250, 250, 255));
-        return content;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.setPadding(dp(24), dp(28), dp(24), dp(28));
+        root.setBackgroundColor(Color.rgb(250, 250, 255));
+        return root;
     }
 
-    private ScrollView wrapInScroll(LinearLayout content) {
+    private ScrollView wrapInScroll(LinearLayout root) {
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
         scrollView.setBackgroundColor(Color.rgb(250, 250, 255));
-        scrollView.addView(content, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT
-        ));
+        scrollView.addView(root, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         return scrollView;
     }
 
-    private void addBadge(LinearLayout content) {
+    private void addBadge(LinearLayout root) {
         TextView badge = new TextView(this);
-        badge.setText("Phase 7");
+        badge.setText("Phase 8");
         badge.setTextSize(14);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
         badge.setTextColor(Color.rgb(124, 58, 237));
         badge.setGravity(Gravity.CENTER);
         badge.setPadding(dp(14), dp(8), dp(14), dp(8));
         badge.setBackground(makeRoundedBackground(Color.rgb(237, 233, 254), dp(18)));
-        content.addView(badge, wrapCenteredWithBottom(dp(22)));
+        root.addView(badge, wrapCenteredWithBottom(dp(22)));
     }
 
-    private void addTitle(LinearLayout content, String text) {
+    private void addTitle(LinearLayout root, String text) {
         TextView title = new TextView(this);
         title.setText(text);
         title.setTextSize(28);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.rgb(28, 25, 23));
         title.setGravity(Gravity.CENTER);
-        content.addView(title, fullWidthWrapWithBottom(dp(12)));
+        root.addView(title, fullWidthWrapWithBottom(dp(12)));
     }
 
-    private void addDescription(LinearLayout content, String text) {
+    private void addDescription(LinearLayout root, String text) {
         TextView description = new TextView(this);
         description.setText(text);
         description.setTextSize(15);
         description.setTextColor(Color.rgb(87, 83, 78));
         description.setGravity(Gravity.CENTER);
-        content.addView(description, fullWidthWrapWithBottom(dp(20)));
+        root.addView(description, fullWidthWrapWithBottom(dp(18)));
     }
 
     private TextView infoBox(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(15);
-        view.setTextColor(Color.rgb(68, 64, 60));
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(16), dp(16), dp(16), dp(16));
-        view.setBackground(makeRoundedBackground(Color.WHITE, dp(20), Color.rgb(221, 214, 254)));
-        return view;
+        TextView box = new TextView(this);
+        box.setText(text);
+        box.setTextSize(15);
+        box.setTextColor(Color.rgb(68, 64, 60));
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(14), dp(14), dp(14), dp(14));
+        box.setBackground(makeRoundedBackground(Color.WHITE, dp(18), Color.rgb(221, 214, 254)));
+        return box;
     }
 
     private TextView statusBox(String text, boolean good) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(16);
-        view.setTypeface(Typeface.DEFAULT_BOLD);
-        view.setTextColor(good ? Color.rgb(21, 128, 61) : Color.rgb(68, 64, 60));
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(14), dp(14), dp(14), dp(14));
-        view.setBackground(makeRoundedBackground(Color.WHITE, dp(22)));
-        return view;
+        TextView box = new TextView(this);
+        box.setText(text);
+        box.setTextSize(16);
+        box.setTypeface(Typeface.DEFAULT_BOLD);
+        box.setTextColor(good ? Color.rgb(21, 128, 61) : Color.rgb(68, 64, 60));
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
+        box.setBackground(makeRoundedBackground(Color.WHITE, dp(18), null));
+        return box;
     }
 
     private TextView metricsBox(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(14);
-        view.setTextColor(Color.rgb(87, 83, 78));
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(14), dp(14), dp(14), dp(14));
-        view.setBackground(makeRoundedBackground(Color.rgb(245, 245, 244), dp(20)));
-        return view;
+        TextView box = new TextView(this);
+        box.setText(text);
+        box.setTextSize(14);
+        box.setTextColor(Color.rgb(87, 83, 78));
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(12), dp(14), dp(12), dp(14));
+        box.setBackground(makeRoundedBackground(Color.rgb(245, 245, 244), dp(18), null));
+        return box;
     }
 
     private TextView actionButton(String text, int color) {
@@ -542,46 +922,39 @@ public class ModeActivity extends Activity {
         button.setTypeface(Typeface.DEFAULT_BOLD);
         button.setTextColor(Color.WHITE);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(16), dp(14), dp(16), dp(14));
-        button.setBackground(makeRoundedBackground(color, dp(18)));
+        button.setPadding(dp(18), dp(14), dp(18), dp(14));
+        button.setBackground(makeRoundedBackground(color, dp(18), null));
         return button;
     }
 
     private void setButtonEnabled(TextView button, boolean enabled) {
-        if (button == null) {
-            return;
-        }
+        if (button == null) return;
         button.setEnabled(enabled);
-        button.setAlpha(enabled ? 1.0f : 0.45f);
+        button.setAlpha(enabled ? 1f : 0.45f);
     }
 
     private GradientDrawable makeRoundedBackground(int color, int radius) {
+        return makeRoundedBackground(color, radius, null);
+    }
+
+    private GradientDrawable makeRoundedBackground(int color, int radius, Integer strokeColor) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color);
         drawable.setCornerRadius(radius);
-        return drawable;
-    }
-
-    private GradientDrawable makeRoundedBackground(int color, int radius, int strokeColor) {
-        GradientDrawable drawable = makeRoundedBackground(color, radius);
-        drawable.setStroke(dp(1), strokeColor);
+        if (strokeColor != null) {
+            drawable.setStroke(dp(1), strokeColor);
+        }
         return drawable;
     }
 
     private LinearLayout.LayoutParams fullWidthWrapWithBottom(int bottomMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         params.setMargins(0, 0, 0, bottomMargin);
         return params;
     }
 
     private LinearLayout.LayoutParams wrapCentered() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         params.gravity = Gravity.CENTER_HORIZONTAL;
         return params;
     }
@@ -594,68 +967,5 @@ public class ModeActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private int parsePort(String value, int fallback) {
-        try {
-            int port = Integer.parseInt(value);
-            if (port > 0 && port < 65536) {
-                return port;
-            }
-        } catch (NumberFormatException ignored) {
-        }
-        return fallback;
-    }
-
-    private String getBestDefaultStudioIp() {
-        String local = getLocalIpv4Address();
-        if (local.startsWith("192.168.")) {
-            int lastDot = local.lastIndexOf('.');
-            if (lastDot > 0) {
-                return local.substring(0, lastDot + 1);
-            }
-        }
-        return "";
-    }
-
-    private String getLocalIpv4Address() {
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface networkInterface = interfaces.nextElement();
-                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
-                    continue;
-                }
-
-                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress address = addresses.nextElement();
-                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
-                        return address.getHostAddress();
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return "unknown";
-    }
-
-    private String safeMessage(Exception e) {
-        String message = e.getMessage();
-        if (message == null || message.trim().isEmpty()) {
-            return e.getClass().getSimpleName();
-        }
-        return message;
-    }
-
-    private String shorten(String value, int maxLength) {
-        if (value == null) {
-            return "none";
-        }
-        String cleaned = value.trim();
-        if (cleaned.length() <= maxLength) {
-            return cleaned;
-        }
-        return cleaned.substring(0, Math.max(0, maxLength - 1)) + "…";
     }
 }
