@@ -24,7 +24,7 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.TextureView;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -70,7 +70,7 @@ public class ModeActivity extends Activity {
     private TextView stopButton;
     private EditText ipInput;
     private EditText portInput;
-    private SurfaceView studioPreviewView;
+    private TextureView studioPreviewView;
     private Surface decoderOutputSurface;
 
     private Intent projectionPermissionData;
