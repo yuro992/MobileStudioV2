@@ -881,6 +881,9 @@ public class ModeActivity extends Activity {
             long uptimeSec = studioConnectedAtMs > 0L && studioClientRunning ? Math.max(0L, (System.currentTimeMillis() - studioConnectedAtMs) / 1000L) : 0L;
             String packetAge = studioLastPacketAtMs > 0L ? Math.max(0L, (System.currentTimeMillis() - studioLastPacketAtMs) / 1000L) + "s ago" : "n/a";
             String frameAge = lastDecodedFrameAtMs > 0L ? Math.max(0L, (System.currentTimeMillis() - lastDecodedFrameAtMs) / 1000L) + "s ago" : "n/a";
+            long studioRenderNowForMetrics = System.currentTimeMillis();
+            String studioLastReleaseAgeForMetrics = studioLastOutputReleaseMs == 0 ? "never" : ((studioRenderNowForMetrics - studioLastOutputReleaseMs) + "ms ago");
+            String studioLastRenderedAgeForMetrics = studioLastFrameRenderedMs == 0 ? "never" : ((studioRenderNowForMetrics - studioLastFrameRenderedMs) + "ms ago");
             metricsView.setText(
                     "Decode preview metrics\n" +
                             "Client: " + (studioClientRunning ? "connected" : "inactive") + " | Surface: " + (decoderOutputSurface != null && decoderOutputSurface.isValid() ? "ready" : "not ready") + "\n" +
