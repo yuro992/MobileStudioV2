@@ -3,6 +3,7 @@ package com.yu.mobilestudio.v2;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -14,10 +15,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -31,6 +34,7 @@ public class ModeActivity extends Activity {
 
     private String mode;
     private TextView statusView;
+    private TextView metricsView;
     private TextView requestButton;
     private TextView startButton;
     private TextView stopButton;
@@ -43,6 +47,23 @@ public class ModeActivity extends Activity {
     private boolean surfaceReady = false;
     private boolean captureActive = false;
     private boolean releasingSession = false;
+
+    private int captureWidth = 0;
+    private int captureHeight = 0;
+    private int captureDensity = 0;
+    private int previewSurfaceWidth = 0;
+    private int previewSurfaceHeight = 0;
+    private long captureStartedAtMs = 0L;
+
+    private final Runnable metricsTicker = new Runnable() {
+        @Override
+        public void run() {
+            updateMetrics();
+            if (captureActive) {
+                mainHandler.postDelayed(this, 1000);
+            }
+        }
+    };
 
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
@@ -76,6 +97,14 @@ public class ModeActivity extends Activity {
     }
 
     @Override
+    public void onBackPressed() {
+        if (captureActive || projectionPermissionData != null) {
+            releaseCaptureSession(true, null);
+        }
+        super.onBackPressed();
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
@@ -93,6 +122,7 @@ public class ModeActivity extends Activity {
             setStatus("Screen capture permission denied", Color.rgb(185, 28, 28));
         }
 
+        updateMetrics();
         updateButtons();
     }
 
@@ -104,27 +134,27 @@ public class ModeActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.setPadding(dp(24), dp(32), dp(24), dp(24));
+        root.setPadding(dp(24), dp(28), dp(24), dp(24));
         scrollView.addView(root, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
 
-        TextView badge = makeBadge("Phase 4");
-        root.addView(badge, wrapWithBottom(dp(18)));
+        TextView badge = makeBadge("Phase 5");
+        root.addView(badge, wrapWithBottom(dp(14)));
 
         TextView title = makeText("Sender Mode Ready", 28, Color.rgb(28, 25, 23), true);
         title.setGravity(Gravity.CENTER);
-        root.addView(title, fullWidthWrapWithBottom(dp(12)));
+        root.addView(title, fullWidthWrapWithBottom(dp(10)));
 
         TextView description = makeText(
-                "Request permission, then start a local screen preview. This phase does not encode, send, or record video yet.",
+                "Local preview cleanup with capture metrics. This phase still does not encode, send, or record video.",
                 15,
                 Color.rgb(87, 83, 78),
                 false
         );
         description.setGravity(Gravity.CENTER);
-        root.addView(description, fullWidthWrapWithBottom(dp(18)));
+        root.addView(description, fullWidthWrapWithBottom(dp(14)));
 
         FrameLayout previewFrame = new FrameLayout(this);
         previewFrame.setPadding(dp(2), dp(2), dp(2), dp(2));
@@ -136,20 +166,27 @@ public class ModeActivity extends Activity {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 surfaceReady = true;
+                updateMetrics();
                 updateButtons();
             }
 
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
                 surfaceReady = true;
+                previewSurfaceWidth = width;
+                previewSurfaceHeight = height;
+                updateMetrics();
             }
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
                 surfaceReady = false;
+                previewSurfaceWidth = 0;
+                previewSurfaceHeight = 0;
                 if (captureActive) {
                     releaseCaptureSession(true, "Preview surface was destroyed. Request permission again.");
                 }
+                updateMetrics();
                 updateButtons();
             }
         });
@@ -159,23 +196,29 @@ public class ModeActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
 
-        root.addView(previewFrame, fullWidthHeightWithBottom(dp(250), dp(16)));
+        root.addView(previewFrame, fullWidthHeightWithBottom(dp(220), dp(12)));
 
         statusView = makeText("Status: Not requested", 15, Color.rgb(68, 64, 60), true);
         statusView.setGravity(Gravity.CENTER);
         statusView.setPadding(dp(12), dp(12), dp(12), dp(12));
         statusView.setBackground(makeRoundedBackground(Color.WHITE, dp(18)));
-        root.addView(statusView, fullWidthWrapWithBottom(dp(16)));
+        root.addView(statusView, fullWidthWrapWithBottom(dp(10)));
+
+        metricsView = makeText("Capture metrics: waiting for preview surface", 12, Color.rgb(87, 83, 78), false);
+        metricsView.setGravity(Gravity.CENTER);
+        metricsView.setPadding(dp(12), dp(10), dp(12), dp(10));
+        metricsView.setBackground(makeRoundedBackground(Color.rgb(245, 245, 244), dp(16)));
+        root.addView(metricsView, fullWidthWrapWithBottom(dp(14)));
 
         requestButton = makeButton("Request Screen Capture Permission", Color.rgb(124, 58, 237));
         requestButton.setOnClickListener(v -> requestScreenCapturePermission());
         root.addView(requestButton, fullWidthWrapWithBottom(dp(10)));
 
-        startButton = makeButton("Start Local Preview", Color.rgb(21, 128, 61));
+        startButton = makeButton("Start Stable Preview", Color.rgb(21, 128, 61));
         startButton.setOnClickListener(v -> startLocalPreview());
         root.addView(startButton, fullWidthWrapWithBottom(dp(10)));
 
-        stopButton = makeButton("Stop Local Preview", Color.rgb(185, 28, 28));
+        stopButton = makeButton("Stop Stable Preview", Color.rgb(185, 28, 28));
         stopButton.setOnClickListener(v -> releaseCaptureSession(true, "Capture preview stopped. Request permission again."));
         root.addView(stopButton, fullWidthWrapWithBottom(dp(14)));
 
@@ -183,6 +226,7 @@ public class ModeActivity extends Activity {
         back.setOnClickListener(v -> finish());
         root.addView(back, wrap());
 
+        updateMetrics();
         updateButtons();
         setContentView(scrollView);
     }
@@ -194,14 +238,14 @@ public class ModeActivity extends Activity {
         root.setPadding(dp(24), dp(24), dp(24), dp(24));
         root.setBackgroundColor(Color.rgb(250, 250, 255));
 
-        root.addView(makeBadge("Phase 4"), wrapWithBottom(dp(22)));
+        root.addView(makeBadge("Phase 5"), wrapWithBottom(dp(22)));
 
         TextView title = makeText("Studio Mode Ready", 28, Color.rgb(28, 25, 23), true);
         title.setGravity(Gravity.CENTER);
         root.addView(title, fullWidthWrapWithBottom(dp(12)));
 
         TextView description = makeText(
-                "Studio receiver is still a placeholder. Sender local preview comes first.",
+                "Studio receiver is still a placeholder. Sender preview stabilization comes first.",
                 15,
                 Color.rgb(87, 83, 78),
                 false
@@ -240,16 +284,15 @@ public class ModeActivity extends Activity {
 
         if (projectionPermissionData == null || projectionPermissionResultCode != Activity.RESULT_OK) {
             setStatus("Request screen-capture permission first", Color.rgb(185, 28, 28));
-            requestScreenCapturePermission();
             return;
         }
 
         if (!surfaceReady || previewSurfaceView == null || !previewSurfaceView.getHolder().getSurface().isValid()) {
-            setStatus("Preview surface not ready yet. Try again in a moment.", Color.rgb(185, 28, 28));
+            setStatus("Preview surface is not ready yet. Try again in a moment.", Color.rgb(185, 28, 28));
             return;
         }
 
-        setStatus("Starting foreground preview service", Color.rgb(124, 58, 237));
+        setStatus("Starting stable foreground preview", Color.rgb(124, 58, 237));
         startKeepAliveService();
         waitForServiceThenCreatePreview(0);
     }
@@ -284,15 +327,15 @@ public class ModeActivity extends Activity {
             DisplayMetrics metrics = new DisplayMetrics();
             getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
 
-            int width = Math.max(metrics.widthPixels, 1);
-            int height = Math.max(metrics.heightPixels, 1);
-            int density = metrics.densityDpi;
+            captureWidth = Math.max(metrics.widthPixels, 1);
+            captureHeight = Math.max(metrics.heightPixels, 1);
+            captureDensity = metrics.densityDpi;
 
             virtualDisplay = mediaProjection.createVirtualDisplay(
-                    "MobileStudioV2LocalPreview",
-                    width,
-                    height,
-                    density,
+                    "MobileStudioV2StableLocalPreview",
+                    captureWidth,
+                    captureHeight,
+                    captureDensity,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     previewSurfaceView.getHolder().getSurface(),
                     null,
@@ -305,7 +348,12 @@ public class ModeActivity extends Activity {
             }
 
             captureActive = true;
-            setStatus("Capture preview active", Color.rgb(21, 128, 61));
+            captureStartedAtMs = SystemClock.elapsedRealtime();
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            setStatus("Stable capture preview active", Color.rgb(21, 128, 61));
+            updateMetrics();
+            mainHandler.removeCallbacks(metricsTicker);
+            mainHandler.post(metricsTicker);
             updateButtons();
         } catch (Exception exception) {
             releaseCaptureSession(true, "Preview failed: " + exception.getClass().getSimpleName());
@@ -318,6 +366,7 @@ public class ModeActivity extends Activity {
         }
 
         releasingSession = true;
+        mainHandler.removeCallbacks(metricsTicker);
 
         if (virtualDisplay != null) {
             try {
@@ -343,14 +392,20 @@ public class ModeActivity extends Activity {
         }
 
         captureActive = false;
+        captureStartedAtMs = 0L;
+        captureWidth = 0;
+        captureHeight = 0;
+        captureDensity = 0;
         projectionPermissionData = null;
         projectionPermissionResultCode = Activity.RESULT_CANCELED;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         stopKeepAliveService();
 
         if (message != null) {
             setStatus(message, Color.rgb(68, 64, 60));
         }
 
+        updateMetrics();
         updateButtons();
         releasingSession = false;
     }
@@ -377,6 +432,49 @@ public class ModeActivity extends Activity {
         }
         statusView.setText("Status: " + status);
         statusView.setTextColor(color);
+    }
+
+    private void updateMetrics() {
+        if (metricsView == null) {
+            return;
+        }
+
+        String orientation = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE
+                ? "landscape"
+                : "portrait";
+
+        String capture = captureActive
+                ? captureWidth + "x" + captureHeight + " @ " + captureDensity + " dpi"
+                : "not active";
+
+        String surface = previewSurfaceWidth > 0 && previewSurfaceHeight > 0
+                ? previewSurfaceWidth + "x" + previewSurfaceHeight
+                : "waiting";
+
+        String uptime = captureActive && captureStartedAtMs > 0L
+                ? formatUptime(SystemClock.elapsedRealtime() - captureStartedAtMs)
+                : "0s";
+
+        String keepAwake = captureActive ? "on" : "off";
+        String fps = captureActive ? "preview active; FPS not measured yet" : "inactive";
+
+        metricsView.setText(
+                "Capture metrics\n"
+                        + "Screen: " + capture + "\n"
+                        + "Preview surface: " + surface + "\n"
+                        + "Orientation: " + orientation + " | Uptime: " + uptime + "\n"
+                        + "Keep screen on: " + keepAwake + " | FPS: " + fps
+        );
+    }
+
+    private String formatUptime(long millis) {
+        long totalSeconds = Math.max(0L, millis / 1000L);
+        long minutes = totalSeconds / 60L;
+        long seconds = totalSeconds % 60L;
+        if (minutes > 0L) {
+            return minutes + "m " + seconds + "s";
+        }
+        return seconds + "s";
     }
 
     private void updateButtons() {

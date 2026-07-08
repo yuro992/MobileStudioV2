@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 4 — Local Screen Preview
+Phase 5 — Sender Preview Cleanup + Capture Metrics
 
 ## What exists
 
@@ -12,33 +12,43 @@ Phase 4 — Local Screen Preview
 - `ModeActivity`
 - `MediaProjectionKeepAliveService`
 - Sender Mode screen-capture permission flow
-- Foreground media projection service
-- Local preview through `SurfaceView`
-- `VirtualDisplay` created from `MediaProjection`
-- Stop button releases `VirtualDisplay` and `MediaProjection`
-- Studio Mode placeholder
-- Phase 4 verify script
+- Sender Mode foreground capture session
+- Sender Mode local preview surface
+- Sender Mode capture metrics panel
+- Keep-screen-on while preview is active
+- Safer Back/onDestroy cleanup path
 - GitHub Actions workflow for debug APK
+- Phase 1 through Phase 5 verify scripts
 
 ## Important constraints
 
-Do not add these in Phase 4:
+Do not add these in Phase 5:
 
-- Video encoding
 - RTMP
 - WebRTC
 - FFmpeg
-- Internal audio capture
+- MediaCodec video encoding
+- AudioPlaybackCapture
 - Real wireless sender/receiver
 - API keys
 - `.env`
 
-## Known UX note
+## Manual test checklist
 
-Because the preview captures the device screen and displays it inside the same app, it can show a mirror-recursion effect. That is expected for Phase 4.
+1. Open MobileStudioV2.
+2. Open Sender Mode.
+3. Confirm Phase 5 label is visible.
+4. Confirm preview area and capture metrics panel are visible.
+5. Request screen-capture permission.
+6. Start Stable Preview.
+7. Confirm mirrored screen preview appears.
+8. Confirm metrics show screen size, preview surface size, orientation, uptime, keep-screen-on state, and FPS placeholder.
+9. Stop Stable Preview.
+10. Confirm preview stops and permission must be requested again.
+11. Start again, then press Back and confirm the app does not crash.
 
 ## Next phase
 
-Phase 5 should stabilize preview behavior across orientation changes, app lifecycle changes, and repeated start/stop cycles.
+Phase 6 should prepare the sender frame pipeline only.
 
-The next phase should still avoid RTMP, audio, and wireless transport.
+The next phase should still avoid RTMP, audio, and real two-phone wireless transport unless explicitly approved.

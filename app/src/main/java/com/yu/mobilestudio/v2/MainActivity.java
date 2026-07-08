@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, fullWidthWrap());
 
         TextView phase = new TextView(this);
-        phase.setText("Phase 4: Local screen preview");
+        phase.setText("Phase 5: Preview cleanup + capture metrics");
         phase.setTextSize(14);
         phase.setTextColor(Color.rgb(124, 58, 237));
         phase.setTypeface(Typeface.DEFAULT_BOLD);
@@ -54,7 +54,7 @@ public class MainActivity extends Activity {
 
         View senderCard = makeModeCard(
                 "Sender Mode",
-                "Game phone: request capture and show local preview",
+                "Game phone: local preview with basic capture metrics",
                 "Sender"
         );
         root.addView(senderCard, fullWidthHeightWithBottom(dp(118), dp(14)));
@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         root.addView(studioCard, fullWidthHeightWithBottom(dp(118), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Phase 4 previews the phone screen locally. It does not encode or send video yet.");
+        footer.setText("Phase 5 stabilizes local preview before any network streaming work.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);

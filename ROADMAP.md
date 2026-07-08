@@ -18,43 +18,56 @@ Required tools:
 
 Status: PASS
 
-Created minimal Android app with Sender Mode and Studio Mode placeholders.
+Goal:
+
+Create a minimal Android app with Sender Mode and Studio Mode placeholders, plus a GitHub Actions debug APK build.
 
 ## Phase 2 — Screen Capture Permission Flow
 
 Status: PASS
 
-Added Android MediaProjection permission request flow in Sender Mode.
+Goal:
+
+Add Android screen-capture permission request in Sender Mode.
 
 ## Phase 3 — MediaProjection Capture Session
 
 Status: PASS
 
-Added foreground capture session start/stop behavior and keep-alive notification.
+Goal:
+
+After permission is granted, start and stop a foreground MediaProjection capture session.
 
 ## Phase 4 — Local Screen Preview
+
+Status: PASS
+
+Goal:
+
+Show the phone screen inside the Sender Mode local preview surface.
+
+## Phase 5 — Sender Preview Cleanup + Capture Metrics
 
 Status: CURRENT
 
 Goal:
 
-Show the phone screen inside Sender Mode using MediaProjection, VirtualDisplay, and SurfaceView.
+Stabilize Sender local preview before network work by adding basic capture metrics, keep-screen-on behavior, safer back handling, resource cleanup, and clearer preview state.
 
 Pass criteria:
 
-- Sender Mode has a preview surface
-- Android screen-capture permission can be requested
-- Foreground capture service starts
-- VirtualDisplay is created after permission is granted
-- Local preview starts and stops
-- No video encoding, RTMP, WebRTC, FFmpeg, wireless sender/receiver, or internal audio capture implementation
+- Phase 5 UI appears
+- Sender preview still works
+- Metrics panel is visible
+- Metrics include screen size, dpi, preview surface size, orientation, uptime, keep-screen-on state, and FPS placeholder
+- Capture session starts and stops cleanly
+- Back/destroy releases capture resources
+- No video encoding, wireless transport, RTMP, WebRTC, FFmpeg, or audio capture implementation
 
-## Phase 5 — Preview Stability + Orientation Handling
-
-Status: NEXT
+## Phase 6 — Sender Frame Pipeline Prep
 
 Goal:
 
-Make local preview more stable across rotation, app background/foreground, screen size changes, and repeated start/stop cycles.
+Prepare a frame-oriented pipeline for the sender side without sending video over the network yet.
 
-Do not start until Phase 4 is confirmed PASS.
+Do not start until Phase 5 is confirmed PASS.

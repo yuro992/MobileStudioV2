@@ -35,8 +35,8 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Verify Phase 4
-        run: bash scripts/verify_phase4.sh
+      - name: Verify Phase 5
+        run: bash scripts/verify_phase5.sh
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
@@ -44,5 +44,5 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: MobileStudioV2-phase4-debug-apk
+          name: MobileStudioV2-debug-apk
           path: app/build/outputs/apk/debug/*.apk
