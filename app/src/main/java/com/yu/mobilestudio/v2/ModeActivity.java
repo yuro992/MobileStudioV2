@@ -72,6 +72,13 @@ public class ModeActivity extends Activity {
     private EditText portInput;
     private SurfaceView studioPreviewView;
     private Surface decoderOutputSurface;
+    private long studioOutputBuffersReleasedForRender = 0;
+    private long studioFrameRenderedCallbacks = 0;
+    private long studioLastOutputReleaseMs = 0;
+    private long studioLastFrameRenderedMs = 0;
+    private long studioSurfaceCreatedCount = 0;
+    private long studioSurfaceChangedCount = 0;
+    private long studioSurfaceDestroyedCount = 0;
 
     private Intent projectionPermissionData;
     private int projectionPermissionResultCode = Activity.RESULT_CANCELED;
@@ -250,19 +257,19 @@ public class ModeActivity extends Activity {
         studioPreviewView.setBackgroundColor(Color.BLACK);
         studioPreviewView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void surfaceCreated(SurfaceHolder holder) {
+            public void surfaceCreated(SurfaceHolder holder) { studioSurfaceCreatedCount++;
                 decoderOutputSurface = holder.getSurface();
                 setStatus("Preview surface ready. Connect to Sender", true);
             }
 
             @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { studioSurfaceChangedCount++;
                 decoderOutputSurface = holder.getSurface();
                 updateMetrics();
             }
 
             @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
+            public void surfaceDestroyed(SurfaceHolder holder) { studioSurfaceDestroyedCount++;
                 decoderOutputSurface = null;
                 releaseStudioDecoder();
                 if (studioClientRunning) {
@@ -790,6 +797,13 @@ public class ModeActivity extends Activity {
         MediaFormat format = MediaFormat.createVideoFormat(AVC_MIME_TYPE, width, height);
         videoDecoder = MediaCodec.createDecoderByType(AVC_MIME_TYPE);
         videoDecoder.configure(format, decoderOutputSurface, null, 0);
+        videoDecoder.setOnFrameRenderedListener((codec, presentationTimeUs, nanoTime) -> {
+            studioFrameRenderedCallbacks++;
+            studioLastFrameRenderedMs = System.currentTimeMillis();
+            if (studioFrameRenderedCallbacks <= 3 || studioFrameRenderedCallbacks % 30 == 0) {
+                runOnUiThread(this::updateMetrics);
+            }
+        }, new android.os.Handler(android.os.Looper.getMainLooper()));
         videoDecoder.start();
         decoderWidth = width;
         decoderHeight = height;
@@ -817,6 +831,8 @@ public class ModeActivity extends Activity {
                 return;
             }
 
+            studioOutputBuffersReleasedForRender++;
+            studioLastOutputReleaseMs = System.currentTimeMillis();
             videoDecoder.releaseOutputBuffer(outputIndex, true);
             if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                 decodedFrameCount++;
@@ -889,7 +905,20 @@ public class ModeActivity extends Activity {
                         "Format: " + outputFormatSummary + " | Uptime: " + uptimeSec + "s\n" +
                         "Network: LAN packet preview | File: off | Sound: off"
         );
-    }
+    
+        if (metricsView != null) {
+            long nowForRenderEvidence = System.currentTimeMillis();
+            String lastReleaseAge = studioLastOutputReleaseMs == 0 ? "never" : ((nowForRenderEvidence - studioLastOutputReleaseMs) + "ms ago");
+            String lastRenderedAge = studioLastFrameRenderedMs == 0 ? "never" : ((nowForRenderEvidence - studioLastFrameRenderedMs) + "ms ago");
+            metricsView.append("\nRender evidence: releaseTrue=" + studioOutputBuffersReleasedForRender
+                    + " | frameRendered=" + studioFrameRenderedCallbacks
+                    + " | lastRelease=" + lastReleaseAge
+                    + " | lastRendered=" + lastRenderedAge
+                    + "\nSurface lifecycle: created=" + studioSurfaceCreatedCount
+                    + " changed=" + studioSurfaceChangedCount
+                    + " destroyed=" + studioSurfaceDestroyedCount);
+        }
+}
 
     private void updateButtons() {
         if ("Studio".equalsIgnoreCase(mode)) {
