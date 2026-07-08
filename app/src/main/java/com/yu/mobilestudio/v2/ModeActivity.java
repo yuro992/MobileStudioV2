@@ -71,6 +71,7 @@ public class ModeActivity extends Activity {
     private EditText ipInput;
     private EditText portInput;
     private TextureView studioPreviewView;
+    private SurfaceTexture studioPreviewTexture;
     private Surface decoderOutputSurface;
 
     private Intent projectionPermissionData;
