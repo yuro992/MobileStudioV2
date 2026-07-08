@@ -4,7 +4,8 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
-import android.graphics.Color; import android.graphics.SurfaceTexture;
+import android.graphics.Color;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
@@ -23,7 +24,6 @@ import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.Surface;
-import android.view.SurfaceHolder;
 import android.view.TextureView;
 import android.view.WindowManager;
 import android.widget.EditText;
@@ -241,7 +241,10 @@ public class ModeActivity extends Activity {
         addTitle(root, "Studio Mode Ready");
         addDescription(root, "Connect to Sender over Wi-Fi/LAN, receive H.264 packets, and render a decode preview.");
 
-        studioPreviewView = new TextureView(this); studioPreviewView.setBackgroundColor(Color.BLACK); studioPreviewView.setOpaque(true); studioPreviewView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() { @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) { studioPreviewTexture = surface; if (decoderOutputSurface != null) { try { decoderOutputSurface.release(); } catch (Exception ignored) { } } decoderOutputSurface = new Surface(surface); } @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) { studioPreviewTexture = surface; if (decoderOutputSurface == null || !decoderOutputSurface.isValid()) { decoderOutputSurface = new Surface(surface); } } @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) { studioPreviewTexture = null; if (decoderOutputSurface != null) { try { decoderOutputSurface.release(); } catch (Exception ignored) { } decoderOutputSurface = null; } releaseStudioDecoder(); return true; } @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) { } }); root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
+        studioPreviewView = new TextureView(this);
+        studioPreviewView.setBackgroundColor(Color.BLACK);
+        studioPreviewView.setOpaque(true);
+        root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
 
         ipInput = new EditText(this);
         ipInput.setText(getBestDefaultStudioIp());
@@ -284,6 +287,72 @@ public class ModeActivity extends Activity {
 
         updateButtons();
         setContentView(wrapInScroll(root));
+
+        studioPreviewView.post(this::installStudioPreviewTextureListener);
+    }
+
+    private void installStudioPreviewTextureListener() {
+        if (studioPreviewView == null) {
+            return;
+        }
+        studioPreviewView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+                attachStudioDecoderSurface(surface);
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+                attachStudioDecoderSurface(surface);
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                studioPreviewTexture = null;
+                if (decoderOutputSurface != null) {
+                    try {
+                        decoderOutputSurface.release();
+                    } catch (Exception ignored) {
+                    }
+                    decoderOutputSurface = null;
+                }
+                releaseStudioDecoder();
+                if (studioClientRunning) {
+                    setStatus("Preview surface lost. Disconnect and reconnect", false);
+                }
+                updateMetrics();
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            }
+        });
+
+        if (studioPreviewView.isAvailable()) {
+            SurfaceTexture surface = studioPreviewView.getSurfaceTexture();
+            if (surface != null) {
+                attachStudioDecoderSurface(surface);
+            }
+        }
+    }
+
+    private void attachStudioDecoderSurface(SurfaceTexture surface) {
+        if (surface == null) {
+            return;
+        }
+        studioPreviewTexture = surface;
+        if (decoderOutputSurface != null) {
+            try {
+                decoderOutputSurface.release();
+            } catch (Exception ignored) {
+            }
+        }
+        decoderOutputSurface = new Surface(surface);
+        if (!studioClientRunning) {
+            setStatus("Preview surface ready. Connect to Sender", true);
+        }
+        updateMetrics();
     }
 
     private void requestCapturePermission() {
@@ -802,6 +871,9 @@ public class ModeActivity extends Activity {
         if (metricsView == null) {
             return;
         }
+ if (metricsView == null) {
+            return;
+        }
 
         if ("Studio".equalsIgnoreCase(mode)) {
             long uptimeSec = studioConnectedAtMs > 0L && studioClientRunning ? Math.max(0L, (System.currentTimeMillis() - studioConnectedAtMs) / 1000L) : 0L;
@@ -847,7 +919,10 @@ public class ModeActivity extends Activity {
     }
 
     private void setStatus(String message, boolean good) {
-        if (statusView != null) {
+        if (statusView == null) {
+            return;
+        }
+ if (statusView != null) {
             statusView.setText("Status: " + message);
             statusView.setTextColor(good ? Color.rgb(21, 128, 61) : Color.rgb(68, 64, 60));
         }
