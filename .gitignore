@@ -12,3 +12,4 @@ local.properties
 .phase*_backups/
 .phase7_backups/
 .phase8_backups/
+.phase8_hotfix_backups/

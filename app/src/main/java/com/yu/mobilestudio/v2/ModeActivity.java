@@ -290,6 +290,11 @@ public class ModeActivity extends Activity {
 
         resetSenderCounters();
         startKeepAliveService();
+        if (!MediaProjectionKeepAliveService.isRunning()) {
+            setStatus("Starting media projection foreground service...", true);
+            mainHandler.postDelayed(() -> startSenderLanDryRun(), 150L);
+            return;
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setStatus("Starting H.264 LAN dry run server and encoder...", true);
         senderActive = true;
@@ -727,7 +732,7 @@ public class ModeActivity extends Activity {
     }
 
     private void startKeepAliveService() {
-        Intent serviceIntent = new Intent(this, MediaProjectionKeepAliveService.class);
+        Intent serviceIntent = MediaProjectionKeepAliveService.startIntent(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -736,10 +741,8 @@ public class ModeActivity extends Activity {
     }
 
     private void stopKeepAliveService() {
-        Intent stopIntent = new Intent(this, MediaProjectionKeepAliveService.class);
-        stopIntent.setAction(MediaProjectionKeepAliveService.ACTION_STOP);
         try {
-            startService(stopIntent);
+            startService(MediaProjectionKeepAliveService.stopIntent(this));
         } catch (Exception ignored) {
             stopService(new Intent(this, MediaProjectionKeepAliveService.class));
         }
