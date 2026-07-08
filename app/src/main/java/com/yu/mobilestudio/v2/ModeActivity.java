@@ -191,7 +191,7 @@ public class ModeActivity extends Activity {
         LinearLayout root = baseContent();
         addBadge(root);
         addTitle(root, "Sender Mode Ready");
-        addDescription(root, "Encode screen buffers and send H.264 packet chunks to Studio over LAN. This phase does not decode, save, stream to RTMP, or capture audio.");
+        addDescription(root, "Encode screen buffers and send H.264 packet chunks to Studio over LAN. Transport test only; later-stage live features are disabled.");
 
         root.addView(infoBox("Sender H.264 LAN endpoint\nIP: " + getLocalIpv4Address() + "\nPort: " + DEFAULT_PORT + "\nProtocol: TCP framed packet dry run"), fullWidthWrapWithBottom(dp(14)));
 

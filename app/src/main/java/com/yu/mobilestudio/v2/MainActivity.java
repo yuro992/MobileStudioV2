@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         root.addView(studioCard, fullWidthHeightWithBottom(dp(118), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Phase 8 sends encoded packet data only. No decode preview, audio, RTMP, or recording yet.");
+        footer.setText("Phase 8 sends encoded packet data only. Later-stage live features are disabled.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);
