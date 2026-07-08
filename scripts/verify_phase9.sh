@@ -23,7 +23,7 @@ grep -q 'Phase 9: Studio H.264 decode preview' app/src/main/java/com/yu/mobilest
 grep -q 'Phase 9' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "ModeActivity phase badge missing"
 grep -q '0x4D535639' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "MSV9 packet magic missing"
 grep -q 'DEFAULT_PORT = 56791' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "phase9 port missing"
-grep -q 'SurfaceView' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "Studio preview SurfaceView missing"
+grep -q 'TextureView' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "Studio preview TextureView missing"
 grep -q 'createDecoderByType' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "H.264 decoder creation missing"
 grep -q 'Connect + Decode Preview' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "Studio decode button missing"
 grep -q 'Decoded frames' app/src/main/java/com/yu/mobilestudio/v2/ModeActivity.java || fail "decoded frame metrics missing"
