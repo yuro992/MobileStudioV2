@@ -10,3 +10,4 @@ local.properties
 *.keystore
 *.jks
 .phase*_backups/
+.phase7_backups/

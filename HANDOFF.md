@@ -2,55 +2,47 @@
 
 ## Current phase
 
-Phase 6 — Sender H.264 Encoder Dry Run
+Phase 7 — Two-phone LAN Pairing + Studio Receiver Skeleton
 
-## What exists
+## What changed in Phase 7
 
-- Minimal Android app project
-- Java-based native Android UI
-- `MainActivity`
-- `ModeActivity`
-- `MediaProjectionKeepAliveService`
-- Sender Mode screen-capture permission flow
-- Sender Mode foreground capture session
-- Sender Mode local H.264 encoder dry run
-- MediaProjection feeding a MediaCodec input surface
-- Encoder drain thread that counts encoded output buffers
-- Encoder metrics panel
-- Keep-screen-on while encoder is active
-- Safer Back/onDestroy cleanup path
-- GitHub Actions workflow for debug APK
-- Phase 1 through Phase 6 verify scripts
+- Added Android network permissions
+- Sender Mode now starts a TCP LAN test server
+- Sender displays local IPv4 address and fixed port `56789`
+- Sender sends one heartbeat message per second to connected Studio clients
+- Studio Mode can enter Sender IP and port
+- Studio connects to Sender and reads heartbeat messages
+- Studio displays heartbeat counter, last heartbeat age, and basic latency estimate
+- Added `scripts/verify_phase7.sh`
+- Updated GitHub Actions to verify Phase 7
+
+## Test instructions
+
+Use two phones on the same Wi-Fi/LAN:
+
+1. Install the same Phase 7 APK on both phones.
+2. On the game phone, open Sender Mode.
+3. Tap `Start LAN Test Server`.
+4. Copy the Sender IP shown on the Sender phone.
+5. On the stream phone, open Studio Mode.
+6. Enter the Sender IP and port `56789`.
+7. Tap `Connect to Sender`.
+8. Confirm that heartbeat counters increase.
+9. Stop/disconnect and confirm both sides recover.
 
 ## Important constraints
 
-Do not add these in Phase 6:
+Phase 7 intentionally does not include:
 
-- RTMP
-- WebRTC
-- FFmpeg
-- AudioPlaybackCapture
-- Real wireless sender/receiver
-- Video file recording
+- Video transport
+- Decoder
+- Audio
+- Browser Source
+- Live output
+- Recording
 - API keys
 - `.env`
 
-## Manual test checklist
-
-1. Open MobileStudioV2.
-2. Open Sender Mode.
-3. Confirm Phase 6 label is visible.
-4. Confirm Encoder dry run panel and Encoder metrics panel are visible.
-5. Request screen-capture permission.
-6. Start Encoder Dry Run.
-7. Confirm status says H.264 encoder dry run active.
-8. Confirm encoded bytes or output count increases after a few seconds.
-9. Confirm metrics show encoder resolution, bitrate, FPS, key frames/config buffers, output format, uptime, and Network/File off.
-10. Stop Encoder Dry Run.
-11. Confirm it stops without crash and asks for permission again before restart.
-
 ## Next phase
 
-Phase 7 should prepare a packet/buffer handoff layer for encoded H.264 data only.
-
-The next phase should still avoid RTMP, audio, and real two-phone wireless transport unless explicitly approved.
+Phase 8 should send encoded H.264 buffers over the LAN path established in Phase 7.

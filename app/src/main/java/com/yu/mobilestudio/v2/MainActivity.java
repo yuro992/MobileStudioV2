@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, fullWidthWrap());
 
         TextView phase = new TextView(this);
-        phase.setText("Phase 6: H.264 encoder dry run");
+        phase.setText("Phase 7: Two-phone LAN pairing test");
         phase.setTextSize(14);
         phase.setTextColor(Color.rgb(124, 58, 237));
         phase.setTypeface(Typeface.DEFAULT_BOLD);
@@ -54,20 +54,20 @@ public class MainActivity extends Activity {
 
         View senderCard = makeModeCard(
                 "Sender Mode",
-                "Game phone: encode screen to H.264 dry-run metrics",
+                "Game phone: LAN test server and heartbeat sender",
                 "Sender"
         );
         root.addView(senderCard, fullWidthHeightWithBottom(dp(118), dp(14)));
 
         View studioCard = makeModeCard(
                 "Studio Mode",
-                "Stream phone: studio controller placeholder",
+                "Stream phone: connect to Sender over Wi-Fi/LAN",
                 "Studio"
         );
         root.addView(studioCard, fullWidthHeightWithBottom(dp(118), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Phase 6 tests screen-to-H.264 encoding only. No network transport or audio yet.");
+        footer.setText("Phase 7 tests pairing only. No video, encoder transport, audio, or live output yet.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);
