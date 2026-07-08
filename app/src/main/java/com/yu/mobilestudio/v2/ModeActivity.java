@@ -891,7 +891,14 @@ public class ModeActivity extends Activity {
                             "Config: " + studioConfigReceived + " | Key frames: " + studioKeyFramesReceived + " | Delta: " + studioDeltaFramesReceived + "\n" +
                             "Decoded frames: " + decodedFrameCount + " | Drops: " + decoderInputDropCount + " | Errors: " + decoderErrorCount + "\n" +
                             "Last packet: " + packetAge + " | Last frame: " + frameAge + " | Uptime: " + uptimeSec + "s\n" +
-                            "Decoder: " + shorten(decoderFormatSummary, 76)
+                            "Render: release=" + studioOutputBuffersReleasedForRender
+                                    + " | frame=" + studioFrameRenderedCallbacks + "\n" +
+                            "Last: rel=" + studioLastReleaseAgeForMetrics
+                                    + " | rend=" + studioLastRenderedAgeForMetrics + "\n" +
+                            "Surface: c=" + studioSurfaceCreatedCount
+                                    + " ch=" + studioSurfaceChangedCount
+                                    + " d=" + studioSurfaceDestroyedCount + "\n" +
+                            "Decoder: " + shorten(decoderFormatSummary, 32)
             );
             return;
         }
