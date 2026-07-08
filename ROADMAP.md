@@ -31,13 +31,9 @@ Completed:
 
 ## Phase 2 — Screen Capture Permission Flow
 
-Status: IN PROGRESS
+Status: PASS
 
-Goal:
-
-Add Android screen-capture permission request in Sender Mode.
-
-Pass criteria:
+Completed:
 
 - Sender Mode has a screen-capture permission button
 - Android permission dialog opens
@@ -46,12 +42,33 @@ Pass criteria:
 - Studio Mode remains placeholder only
 - Verify script exists and passes
 - GitHub Actions workflow builds debug APK
-- No preview, virtual display, encoding, audio, wireless stream, RTMP, WebRTC, or FFmpeg implementation
 
-## Phase 3 — Local Capture Preview
+## Phase 3 — MediaProjection Capture Session
+
+Status: IN PROGRESS
 
 Goal:
 
-Use the granted permission to create a safe local preview path.
+After permission is granted, start and stop a safe MediaProjection foreground-service session.
 
-Do not start until Phase 2 is confirmed PASS.
+Pass criteria:
+
+- Sender Mode can request screen-capture permission
+- Sender Mode can start capture session after permission is granted
+- A foreground service of type `mediaProjection` is declared
+- Capture service calls `getMediaProjection`
+- Capture service registers `MediaProjection.Callback`
+- Capture service displays foreground notification while active
+- Sender Mode can stop capture session
+- Sender Mode receives service status updates
+- Verify script exists and passes
+- GitHub Actions workflow builds debug APK
+- No preview, virtual display output, encoding, audio, wireless stream, RTMP, WebRTC, or FFmpeg implementation
+
+## Phase 4 — Local Capture Preview
+
+Goal:
+
+Create a local preview path by attaching the active capture session to a display surface.
+
+Do not start until Phase 3 is confirmed PASS.

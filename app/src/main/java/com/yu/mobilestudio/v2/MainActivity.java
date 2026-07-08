@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, fullWidthWrap());
 
         TextView phase = new TextView(this);
-        phase.setText("Phase 2: screen-capture permission flow");
+        phase.setText("Phase 3: capture session service");
         phase.setTextSize(14);
         phase.setTextColor(Color.rgb(124, 58, 237));
         phase.setTypeface(Typeface.DEFAULT_BOLD);
@@ -54,7 +54,7 @@ public class MainActivity extends Activity {
 
         View senderCard = makeModeCard(
                 "Sender Mode",
-                "Game phone: request Android screen-capture permission",
+                "Game phone: request permission and start/stop capture session",
                 "Sender"
         );
         root.addView(senderCard, fullWidthHeightWithBottom(dp(124), dp(14)));
@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         root.addView(studioCard, fullWidthHeightWithBottom(dp(124), dp(20)));
 
         TextView footer = new TextView(this);
-        footer.setText("Phase 2 only requests capture permission. No preview, encoding, wireless stream, or live output yet.");
+        footer.setText("Phase 3 starts a safe MediaProjection foreground-service session. No preview, encoding, wireless stream, or live output yet.");
         footer.setTextSize(13);
         footer.setTextColor(Color.rgb(120, 113, 108));
         footer.setGravity(Gravity.CENTER);

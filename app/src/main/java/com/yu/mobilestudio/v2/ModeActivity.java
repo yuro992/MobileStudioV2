@@ -1,12 +1,15 @@
 package com.yu.mobilestudio.v2;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjectionManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.widget.LinearLayout;
@@ -14,11 +17,37 @@ import android.widget.TextView;
 
 public class ModeActivity extends Activity {
 
-    private static final int REQUEST_SCREEN_CAPTURE = 2002;
+    private static final int REQUEST_SCREEN_CAPTURE = 2003;
 
     private String mode;
     private TextView statusText;
-    private TextView primaryButton;
+    private TextView requestButton;
+    private TextView startButton;
+    private TextView stopButton;
+    private int projectionResultCode = 0;
+    private Intent projectionResultData;
+    private boolean receiverRegistered = false;
+
+    private final BroadcastReceiver captureStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || !CaptureService.ACTION_STATUS.equals(intent.getAction())) {
+                return;
+            }
+
+            String status = intent.getStringExtra(CaptureService.EXTRA_STATUS);
+            boolean success = intent.getBooleanExtra(CaptureService.EXTRA_SUCCESS, false);
+            if (status == null || status.trim().isEmpty()) {
+                return;
+            }
+
+            setStatus("Status: " + status, success);
+            if (!success && (status.contains("stopped") || status.contains("failed"))) {
+                clearProjectionPermissionForNextSession();
+            }
+            updateSessionButtons(success);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,7 +69,7 @@ public class ModeActivity extends Activity {
         root.setBackgroundColor(Color.rgb(250, 250, 255));
 
         TextView badge = new TextView(this);
-        badge.setText("Phase 2");
+        badge.setText("Phase 3");
         badge.setTextSize(14);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
         badge.setTextColor(Color.rgb(124, 58, 237));
@@ -59,9 +88,9 @@ public class ModeActivity extends Activity {
 
         TextView description = new TextView(this);
         if (isSender) {
-            description.setText("Request Android screen-capture permission. This phase does not preview, encode, stream, or record yet.");
+            description.setText("Request permission, then start a foreground capture session. This phase does not preview, encode, stream, or record yet.");
         } else {
-            description.setText("Studio Mode is still a placeholder in Phase 2. Real receiving and layout tools come later.");
+            description.setText("Studio Mode is still a placeholder in Phase 3. Real receiving and layout tools come later.");
         }
         description.setTextSize(15);
         description.setTextColor(Color.rgb(87, 83, 78));
@@ -76,12 +105,23 @@ public class ModeActivity extends Activity {
         statusText.setGravity(Gravity.CENTER);
         statusText.setPadding(dp(14), dp(10), dp(14), dp(10));
         statusText.setBackground(makeRoundedBackground(Color.WHITE, dp(18)));
-        root.addView(statusText, fullWidthWrapWithBottom(dp(24)));
+        root.addView(statusText, fullWidthWrapWithBottom(dp(18)));
 
         if (isSender) {
-            primaryButton = makeButton("Request Screen Capture Permission", Color.rgb(124, 58, 237), Color.WHITE);
-            primaryButton.setOnClickListener(v -> requestScreenCapturePermission());
-            root.addView(primaryButton, fullWidthWrapWithBottom(dp(14)));
+            requestButton = makeButton("Request Screen Capture Permission", Color.rgb(124, 58, 237), Color.WHITE);
+            requestButton.setOnClickListener(v -> requestScreenCapturePermission());
+            root.addView(requestButton, fullWidthWrapWithBottom(dp(12)));
+
+            startButton = makeButton("Start Capture Session", Color.rgb(22, 101, 52), Color.WHITE);
+            startButton.setOnClickListener(v -> startCaptureSession());
+            root.addView(startButton, fullWidthWrapWithBottom(dp(12)));
+
+            stopButton = makeButton("Stop Capture Session", Color.rgb(185, 28, 28), Color.WHITE);
+            stopButton.setOnClickListener(v -> stopCaptureSession());
+            root.addView(stopButton, fullWidthWrapWithBottom(dp(18)));
+
+            updatePermissionButtons(false);
+            updateSessionButtons(false);
         }
 
         TextView back = makeButton("Back", Color.rgb(39, 39, 42), Color.WHITE);
@@ -89,6 +129,18 @@ public class ModeActivity extends Activity {
         root.addView(back, wrap());
 
         setContentView(root);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        registerCaptureStatusReceiver();
+    }
+
+    @Override
+    protected void onPause() {
+        unregisterCaptureStatusReceiver();
+        super.onPause();
     }
 
     private void requestScreenCapturePermission() {
@@ -114,12 +166,77 @@ public class ModeActivity extends Activity {
         }
 
         if (resultCode == RESULT_OK && data != null) {
-            setStatus("Status: Screen capture permission granted", true);
-            if (primaryButton != null) {
-                primaryButton.setText("Request Again");
+            projectionResultCode = resultCode;
+            projectionResultData = data;
+            setStatus("Status: Permission granted. Ready to start session", true);
+            if (requestButton != null) {
+                requestButton.setText("Request Again");
             }
+            updatePermissionButtons(true);
+            updateSessionButtons(false);
         } else {
+            projectionResultCode = 0;
+            projectionResultData = null;
             setStatus("Status: Permission denied or cancelled", false);
+            updatePermissionButtons(false);
+            updateSessionButtons(false);
+        }
+    }
+
+    private void startCaptureSession() {
+        if (projectionResultCode == 0 || projectionResultData == null) {
+            setStatus("Status: Request permission before starting session", false);
+            updatePermissionButtons(false);
+            updateSessionButtons(false);
+            return;
+        }
+
+        setStatus("Status: Capture session starting...", false);
+
+        Intent intent = new Intent(this, CaptureService.class);
+        intent.setAction(CaptureService.ACTION_START);
+        intent.putExtra(CaptureService.EXTRA_RESULT_CODE, projectionResultCode);
+        intent.putExtra(CaptureService.EXTRA_RESULT_DATA, projectionResultData);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+    }
+
+    private void stopCaptureSession() {
+        Intent intent = new Intent(this, CaptureService.class);
+        intent.setAction(CaptureService.ACTION_STOP);
+        startService(intent);
+        clearProjectionPermissionForNextSession();
+        setStatus("Status: Capture session stopping...", false);
+        updateSessionButtons(false);
+    }
+
+    private void registerCaptureStatusReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
+
+        IntentFilter filter = new IntentFilter(CaptureService.ACTION_STATUS);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(captureStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(captureStatusReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
+    private void unregisterCaptureStatusReceiver() {
+        if (!receiverRegistered) {
+            return;
+        }
+
+        try {
+            unregisterReceiver(captureStatusReceiver);
+        } finally {
+            receiverRegistered = false;
         }
     }
 
@@ -129,6 +246,35 @@ public class ModeActivity extends Activity {
         }
         statusText.setText(value);
         statusText.setTextColor(success ? Color.rgb(22, 101, 52) : Color.rgb(68, 64, 60));
+    }
+
+    private void clearProjectionPermissionForNextSession() {
+        projectionResultCode = 0;
+        projectionResultData = null;
+        if (requestButton != null) {
+            requestButton.setText("Request Again");
+        }
+    }
+
+    private void updatePermissionButtons(boolean hasPermission) {
+        if (startButton == null) {
+            return;
+        }
+
+        startButton.setEnabled(hasPermission);
+        startButton.setAlpha(hasPermission ? 1.0f : 0.42f);
+    }
+
+    private void updateSessionButtons(boolean sessionActive) {
+        if (startButton != null) {
+            startButton.setEnabled(!sessionActive && projectionResultCode != 0 && projectionResultData != null);
+            startButton.setAlpha(startButton.isEnabled() ? 1.0f : 0.42f);
+        }
+
+        if (stopButton != null) {
+            stopButton.setEnabled(sessionActive);
+            stopButton.setAlpha(sessionActive ? 1.0f : 0.42f);
+        }
     }
 
     private TextView makeButton(String text, int backgroundColor, int textColor) {
