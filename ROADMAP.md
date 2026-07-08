@@ -50,3 +50,6 @@ Improve decoder resilience, reconnect behavior, and preview scaling before addin
 
 Do not start until Phase 9 is confirmed PASS.
 
+## Phase 9 hotfix — Studio preview render path
+
+Use TextureView as the decoder output target for a more reliable preview surface on mobile devices.

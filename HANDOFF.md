@@ -34,3 +34,6 @@ Phase 10 should stabilize Studio preview and reconnect behavior only.
 
 It should not add live platform output, sound capture, browser overlay source, or full scene composition yet.
 
+## Phase 9 hotfix note
+
+Studio preview output was moved from SurfaceView to TextureView. Keep this in mind before future decode/render work.

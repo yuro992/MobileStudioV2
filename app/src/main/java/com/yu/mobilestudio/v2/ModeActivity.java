@@ -4,7 +4,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
-import android.graphics.Color;
+import android.graphics.Color; import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
@@ -240,31 +240,9 @@ public class ModeActivity extends Activity {
         addTitle(root, "Studio Mode Ready");
         addDescription(root, "Connect to Sender over Wi-Fi/LAN, receive H.264 packets, and render a decode preview.");
 
-        studioPreviewView = new SurfaceView(this);
-        studioPreviewView.setBackgroundColor(Color.BLACK);
-        studioPreviewView.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                decoderOutputSurface = holder.getSurface();
-                setStatus("Preview surface ready. Connect to Sender", true);
-            }
-
-            @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                decoderOutputSurface = holder.getSurface();
-                updateMetrics();
-            }
-
-            @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                decoderOutputSurface = null;
-                releaseStudioDecoder();
-                if (studioClientRunning) {
-                    setStatus("Preview surface lost. Disconnect and reconnect", false);
-                }
-            }
-        });
-        root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
+        studioPreviewView = new TextureView(this); studioPreviewView.setBackgroundColor(Color.BLACK); studioPreviewView.setOpaque(true); studioPreviewView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() { @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) { studioPreviewTexture = surface; if (decoderOutputSurface != null) { try { decoderOutputSurface.release(); } catch (Exception ignored) { } } decoderOutputSurface = new Surface(surface); setStatus("Preview surface ready.
+Connect to Sender", true); updateMetrics(); } @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) { studioPreviewTexture = surface; if (decoderOutputSurface == null || !decoderOutputSurface.isValid()) { decoderOutputSurface = new Surface(surface); } updateMetrics(); } @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) { studioPreviewTexture = null; if (decoderOutputSurface != null) { try { decoderOutputSurface.release(); } catch (Exception ignored) { } decoderOutputSurface = null; } releaseStudioDecoder(); if (studioClientRunning) { setStatus("Preview surface lost.
+Disconnect and reconnect", false); } updateMetrics(); return true; } @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) { } }); root.addView(studioPreviewView, fullWidthHeightWithBottom(dp(220), dp(14)));
 
         ipInput = new EditText(this);
         ipInput.setText(getBestDefaultStudioIp());
@@ -761,7 +739,7 @@ public class ModeActivity extends Activity {
         videoDecoder.start();
         decoderWidth = width;
         decoderHeight = height;
-        decoderFormatSummary = "video/avc " + width + "x" + height;
+        decoderFormatSummary = "video/avc " + width + "x" + height + " -> TextureView";
     }
 
     private synchronized void drainStudioDecoderOutputs() {

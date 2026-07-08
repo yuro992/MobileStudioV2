@@ -31,3 +31,6 @@ Phase 9 intentionally does not include:
 bash scripts/verify_phase9.sh
 ```
 
+## Phase 9 hotfix
+
+Studio decode preview now renders through TextureView to avoid black preview surfaces on devices where SurfaceView inside a scroll layout does not display decoded frames reliably.
